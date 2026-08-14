@@ -1,0 +1,27 @@
+# Object & Compiled Binaries
+*.o
+*.a
+*.so
+*.out
+*.exe
+bin/
+build/
+
+# Flex / Lex Generated Output
+lex.yy.c
+*.lex.c
+*.flex.c
+
+# Bison / Yacc Generated Output
+y.tab.c
+y.tab.h
+*.tab.c
+*.tab.h
+*.output
+
+# Editor & System Files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
