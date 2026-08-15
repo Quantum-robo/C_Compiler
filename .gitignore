@@ -25,3 +25,17 @@ y.tab.h
 *.swp
 *~
 .DS_Store
+
+# Flex generated files
+src/lexer/lex.yy.c
+src/lexer/lex.yy.cc
+
+# Compiled binaries
+/lexer
+src/lexer/lexer
+
+# Test files
+src/lexer/test.c
+
+# Build files
+build/
