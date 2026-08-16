@@ -1,5 +1,12 @@
-flex Lexer.l
+# C_Compiler
 
-g++ -std=c++17 lex.yy.c Token.cpp -I. -o lexer
+## Lexer
 
-./lexer testfile
+The lexer is implemented using Flex's C++ scanner interface.
+
+### Build
+
+From the repository root:
+
+```bash
+make
