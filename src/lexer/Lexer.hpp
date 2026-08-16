@@ -2,9 +2,11 @@
 
 #include <iostream>
 
-#ifndef yyFlexLexer
-#include <FlexLexer.h>
+#ifdef yyFlexLexer
+#undef yyFlexLexer
 #endif
+
+#include <FlexLexer.h>
 
 #include "Token.hpp"
 

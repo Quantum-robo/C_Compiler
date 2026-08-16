@@ -1,13 +1,7 @@
 %{
-#include <stdio.h>
-#include "Token.hpp"
+#include "Lexer.hpp"
 
-void printToken(TokenType type)
-{
-    printf("%-20s | %s\n",
-           yytext,
-           tokenTypeToString(type));
-}
+#define YY_DECL int Lexer::yylex()
 
 int colno = 1;
 int current_col = 1;
@@ -22,8 +16,10 @@ int current_col = 1;
     }
 %}
 
+%option c++
 %option noyywrap
 %option yylineno
+%option yyclass="Lexer"
 
 %%
 
@@ -33,72 +29,128 @@ int current_col = 1;
 
 
     /* String literals */
-\"([^\"\\]|\\.)*\"    { printToken(TokenType::StringLiteral); }
+\"([^\"\\]|\\.)*\"    {
+    currentToken = {TokenType::StringLiteral, yytext};
+    return 1;
+}
 
 
     /* Character literals */
-\'([^\'\\]|\\.)*\'  { printToken(TokenType::CharacterLiteral); }
+\'([^\'\\]|\\.)*\'  {
+    currentToken = {TokenType::CharacterLiteral, yytext};
+    return 1;
+}
 
 
     /* Keywords */
-"auto"|"break"|"case"|"char"|"const"  {printToken(TokenType::Keyword);}
-"continue"|"default"|"do"|"double"  {printToken(TokenType::Keyword);}
-"else"|"enum"|"extern"|"float"|"for"  {printToken(TokenType::Keyword);}
-"goto"|"if"|"inline"|"int"|"long"|"register"  {printToken(TokenType::Keyword);}
-"restrict"|"return"|"short"|"signed"|"sizeof"  {printToken(TokenType::Keyword);}
-"static"|"struct"|"switch"|"typedef"|"union" {printToken(TokenType::Keyword);}
-"unsigned"|"void"|"volatile"|"while"  {printToken(TokenType::Keyword);}
+"auto"|"break"|"case"|"char"|"const" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
+
+"continue"|"default"|"do"|"double" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
+
+"else"|"enum"|"extern"|"float"|"for" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
+
+"goto"|"if"|"inline"|"int"|"long"|"register" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
+
+"restrict"|"return"|"short"|"signed"|"sizeof" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
+
+"static"|"struct"|"switch"|"typedef"|"union" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
+
+"unsigned"|"void"|"volatile"|"while" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
 
 
     /* Identifiers */
-[a-zA-Z_][a-zA-Z0-9_]* {printToken(TokenType::Identifier);}
+[a-zA-Z_][a-zA-Z0-9_]* {
+    currentToken = {TokenType::Identifier, yytext};
+    return 1;
+}
 
 
     /* Multi-character operators */
-"=="|"!="|"<="|">="|"&&"|"||"|"++"|"--"|"+="|"-="|"*="|"/="|"%="|"&="|"|="|"^="|"<<"|">>"|"->"|"<<="|">>=" {printToken(TokenType::Operator);}
+"=="|"!="|"<="|">="|"&&"|"||"|"++"|"--"|"+="|"-="|"*="|"/="|"%="|"&="|"|="|"^="|"<<"|">>"|"->"|"<<="|">>=" {
+    currentToken = {TokenType::Operator, yytext};
+    return 1;
+}
 
     /* Single-character operators */
-[+\-*/%=<>!&|^~?:.] {printToken(TokenType::Operator);}
+[+\-*/%=<>!&|^~?:.] {
+    currentToken = {TokenType::Operator, yytext};
+    return 1;
+}
 
     /* Hexadecimal literals */
-0[xX][0-9a-fA-F]+ {printToken(TokenType::HexLiteral);}
+0[xX][0-9a-fA-F]+ {
+    currentToken = {TokenType::HexLiteral, yytext};
+    return 1;
+}
 
     /* Floating-point literals */
-[0-9]*\.[0-9]+([eE][+-]?[0-9]+)?[fFlL]? {printToken(TokenType::FloatLiteral);}
+[0-9]*\.[0-9]+([eE][+-]?[0-9]+)?[fFlL]? {
+    currentToken = {TokenType::FloatLiteral, yytext};
+    return 1;
+}
 
-[0-9]+\.([eE][+-]?[0-9]+)?[fFlL]? {printToken(TokenType::FloatLiteral);}
+[0-9]+\.([eE][+-]?[0-9]+)?[fFlL]? {
+    currentToken = {TokenType::FloatLiteral, yytext};
+    return 1;
+}
 
-[0-9]+[eE][+-]?[0-9]+[fFlL]? {printToken(TokenType::FloatLiteral);}
+[0-9]+[eE][+-]?[0-9]+[fFlL]? {
+    currentToken = {TokenType::FloatLiteral, yytext};
+    return 1;
+}
 
     /* Integer literals */
-[0-9]+ {printToken(TokenType::IntegerLiteral);}
+[0-9]+ {
+    currentToken = {TokenType::IntegerLiteral, yytext};
+    return 1;
+}
 
     /* Separators */
-[;,\{\}\(\)\[\]] {printToken(TokenType::Separator);}
+[;,\{\}\(\)\[\]] {
+    currentToken = {TokenType::Separator, yytext};
+    return 1;
+}
 
     /* Whitespace */
 [ \t\n\r]+  {/* ignore */}
 
     /* Lexical errors */
-. {fprintf(stderr,"LEXICAL ERROR: '%s' at line %d, Col: %d\n", yytext, yylineno, current_col);}
+. {
+    currentToken = {TokenType::Unknown, yytext};
+    return 1;
+}
 %%
-int main(int argc, char **argv)
+Lexer::Lexer(std::istream* input)
+    : yyFlexLexer(input)
 {
-    if (argc > 1) {
-        FILE *file = fopen(argv[1], "r");
+}
 
-        if (!file) {
-            perror("Error opening file");
-            return 1;
-        }
-
-        yyin = file;
+Token Lexer::nextToken()
+{
+    if (yylex() == 0) {
+        currentToken = {TokenType::EndOfFile, ""};
     }
 
-    printf("%-20s | %s\n", "Lexeme", "Token");
-    printf("---------------------|----------------------\n");
-
-    yylex();
-
-    return 0;
+    return currentToken;
 }

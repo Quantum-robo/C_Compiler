@@ -31,6 +31,9 @@ const char* tokenTypeToString(TokenType type)
         case TokenType::Separator:
             return "separator";
 
+        case TokenType::EndOfFile:
+            return "EOF";
+
         case TokenType::Unknown:
             return "unknown";
     }
