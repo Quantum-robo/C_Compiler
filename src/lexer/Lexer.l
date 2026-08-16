@@ -41,7 +41,6 @@ int current_col = 1;
     return 1;
 }
 
-
     /* Keywords */
 "auto"|"break"|"case"|"char"|"const" {
     currentToken = {TokenType::Keyword, yytext};
@@ -78,6 +77,10 @@ int current_col = 1;
     return 1;
 }
 
+"class"|"new"|"delete"|"this" {
+    currentToken = {TokenType::Keyword, yytext};
+    return 1;
+}
 
     /* Identifiers */
 [a-zA-Z_][a-zA-Z0-9_]* {
