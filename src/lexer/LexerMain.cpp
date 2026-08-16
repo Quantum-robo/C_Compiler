@@ -21,14 +21,19 @@ int main(int argc, char* argv[])
 
     Lexer lexer(&input);
 
+    std::cout << "Lexeme | Token\n";
+
     while (true)
     {
         Token token = lexer.nextToken();
 
-        std::cout << tokenTypeToString(token.type)
-                  << " | "
-                  << token.lexeme
-                  << '\n';
+        if (token.type != TokenType::EndOfFile)
+        {
+            std::cout << token.lexeme
+                      << " | "
+                      << tokenTypeToString(token.type)
+                      << '\n';
+        }
 
         if (token.type == TokenType::EndOfFile)
             break;
