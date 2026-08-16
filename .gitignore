@@ -39,3 +39,13 @@ src/lexer/test.c
 
 # Build files
 build/
+
+# Flex generated files
+src/lexer/lex.yy.c
+src/lexer/lex.yy.cc
+
+# C/C++ object files
+src/lexer/*.o
+
+# Local lexer test executable
+src/lexer/lexer_test
