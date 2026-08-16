@@ -5,14 +5,20 @@
 
 int colno = 1;
 int current_col = 1;
+int token_start_line = 1;
+int token_start_col = 1;
 
 #define YY_USER_ACTION \
+    token_start_line = yylineno; \
+    token_start_col = colno; \
     current_col = colno; \
     for (int i = 0; i < yyleng; i++) { \
-        if (yytext[i] == '\n') \
+        if (yytext[i] == '\n') { \
+            token_start_line--; \
             colno = 1; \
-        else \
+        } else { \
             colno++; \
+        } \
     }
 %}
 
@@ -34,10 +40,42 @@ int current_col = 1;
     return 1;
 }
 
+\"([^\"\\]|\\.)*\n {
+    addError(
+        "unterminated string literal",
+        token_start_line,
+        token_start_col
+    );
+
+    currentToken = {TokenType::Unknown, yytext};
+    return 1;
+}
 
     /* Character literals */
-\'([^\'\\]|\\.)*\'  {
+\'([^\'\\]|\\.)\' {
     currentToken = {TokenType::CharacterLiteral, yytext};
+    return 1;
+}
+
+\'([^\'\\]|\\.){2,}\' {
+    addError(
+        "invalid character literal",
+        token_start_line,
+        token_start_col
+    );
+
+    currentToken = {TokenType::Unknown, yytext};
+    return 1;
+}
+
+\'([^\'\\]|\\.)*\n {
+    addError(
+        "unterminated character literal",
+        token_start_line,
+        token_start_col
+    );
+
+    currentToken = {TokenType::Unknown, yytext};
     return 1;
 }
 
@@ -140,6 +178,12 @@ int current_col = 1;
 
     /* Lexical errors */
 . {
+    addError(
+        std::string("invalid character '") + yytext + "'",
+        yylineno,
+        current_col
+    );
+
     currentToken = {TokenType::Unknown, yytext};
     return 1;
 }
@@ -147,6 +191,16 @@ int current_col = 1;
 Lexer::Lexer(std::istream* input)
     : yyFlexLexer(input)
 {
+}
+
+void Lexer::addError(const std::string& message, int line, int column)
+{
+    lexicalErrors.push_back({message, line, column});
+}
+
+const std::vector<LexicalError>& Lexer::errors() const
+{
+    return lexicalErrors;
 }
 
 Token Lexer::nextToken()
