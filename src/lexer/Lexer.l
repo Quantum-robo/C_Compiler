@@ -45,12 +45,12 @@ int token_start_col = 1;
 }
 
     /* String literals */
-\"([^\"\\]|\\.)*\"    {
+\"([^\"\\\n]|\\.)*\" {
     currentToken = {TokenType::StringLiteral, yytext};
     return 1;
 }
 
-\"([^\"\\]|\\.)*\n {
+\"([^\"\\\n]|\\.)*\n {
     addError(
         "unterminated string literal",
         token_start_line,
@@ -62,7 +62,7 @@ int token_start_col = 1;
 }
 
     /* Character literals */
-\'([^\'\\]|\\.)\' {
+\'([^\'\\\n]|\\.)\' {
     currentToken = {TokenType::CharacterLiteral, yytext};
     return 1;
 }
@@ -78,7 +78,7 @@ int token_start_col = 1;
     return 1;
 }
 
-\'([^\'\\]|\\.)*\n {
+\'([^\'\\\n]|\\.)*\n {
     addError(
         "unterminated character literal",
         token_start_line,
