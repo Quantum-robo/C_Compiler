@@ -9,3 +9,9 @@ char y = '\n';
 char z = '\\';
 
 "hello world";
+
+0xdeadbeef
+0xDEADBEEF
+0x123456789ABCDEF
+
+0xHHk

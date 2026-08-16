@@ -80,6 +80,7 @@ int current_col = 1;
     /*  KEYWORDS  */
 "auto"      { printToken(TokenType::KwAuto); }
 "break"     { printToken(TokenType::KwBreak); }
+"bool"      { printToken(TokenType::KwBool); }
 "case"      { printToken(TokenType::KwCase); }
 "char"      { printToken(TokenType::KwChar); }
 "class"     { printToken(TokenType::KwClass); }
@@ -92,6 +93,7 @@ int current_col = 1;
 "else"      { printToken(TokenType::KwElse); }
 "enum"      { printToken(TokenType::KwEnum); }
 "extern"    { printToken(TokenType::KwExtern); }
+"false"     { printToken(TokenType::KwFalse); }
 "float"     { printToken(TokenType::KwFloat); }
 "for"       { printToken(TokenType::KwFor); }
 "goto"      { printToken(TokenType::KwGoto); }
@@ -113,6 +115,7 @@ int current_col = 1;
 "struct"    { printToken(TokenType::KwStruct); }
 "switch"    { printToken(TokenType::KwSwitch); }
 "this"      { printToken(TokenType::KwThis); }
+"true"      { printToken(TokenType::KwTrue); }
 "typedef"   { printToken(TokenType::KwTypedef); }
 "union"     { printToken(TokenType::KwUnion); }
 "unsigned"  { printToken(TokenType::KwUnsigned); }

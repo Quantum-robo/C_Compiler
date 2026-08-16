@@ -7,6 +7,7 @@ const char* tokenTypeToString(TokenType type)
         // Keywords
         case TokenType::KwAuto:        return "TOKEN_KW_AUTO";
         case TokenType::KwBreak:       return "TOKEN_KW_BREAK";
+        case TokenType::KwBool:        return "TOKEN_KW_BOOL";
         case TokenType::KwCase:        return "TOKEN_KW_CASE";
         case TokenType::KwChar:        return "TOKEN_KW_CHAR";
         case TokenType::KwClass:       return "TOKEN_KW_CLASS";
@@ -19,6 +20,7 @@ const char* tokenTypeToString(TokenType type)
         case TokenType::KwElse:        return "TOKEN_KW_ELSE";
         case TokenType::KwEnum:        return "TOKEN_KW_ENUM";
         case TokenType::KwExtern:      return "TOKEN_KW_EXTERN";
+        case TokenType::KwFalse:       return "TOKEN_KW_FALSE";
         case TokenType::KwFloat:       return "TOKEN_KW_FLOAT";
         case TokenType::KwFor:         return "TOKEN_KW_FOR";
         case TokenType::KwGoto:        return "TOKEN_KW_GOTO";
@@ -40,6 +42,7 @@ const char* tokenTypeToString(TokenType type)
         case TokenType::KwStruct:      return "TOKEN_KW_STRUCT";
         case TokenType::KwSwitch:      return "TOKEN_KW_SWITCH";
         case TokenType::KwThis:        return "TOKEN_KW_THIS";
+        case TokenType::KwTrue:        return "TOKEN_KW_TRUE";
         case TokenType::KwTypedef:     return "TOKEN_KW_TYPEDEF";
         case TokenType::KwUnion:       return "TOKEN_KW_UNION";
         case TokenType::KwUnsigned:    return "TOKEN_KW_UNSIGNED";

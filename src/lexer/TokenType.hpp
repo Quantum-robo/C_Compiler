@@ -6,6 +6,7 @@ enum class TokenType {
 
     KwAuto,
     KwBreak,
+    KwBool,
     KwCase,
     KwChar,
     KwConst,
@@ -18,6 +19,7 @@ enum class TokenType {
     KwElse,
     KwEnum,
     KwExtern,
+    KwFalse,
     KwFloat,
     KwFor,
     KwGoto,
@@ -39,6 +41,7 @@ enum class TokenType {
     KwStruct,
     KwSwitch,
     KwThis,
+    KwTrue,
     KwTypedef,
     KwUnion,
     KwUnsigned,
