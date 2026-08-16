@@ -33,6 +33,16 @@ int token_start_col = 1;
 "//".*                                  {   /* ignore */ }
 "/*"([^*]|\*+[^*/])*\*+"/"             {    /* ignore */ }
 
+"/*"([^*]|\*+[^*/])* {
+    addError(
+        "unterminated block comment",
+        token_start_line,
+        token_start_col
+    );
+
+    currentToken = {TokenType::Unknown, yytext};
+    return 1;
+}
 
     /* String literals */
 \"([^\"\\]|\\.)*\"    {
