@@ -37,7 +37,7 @@ char u = '
 
 int v = 40;
 int w = 50;
-int xx = @#$%^&*€§±;
+int xx = @#$%^&*;
 int y = 60;
 string greet="
 h

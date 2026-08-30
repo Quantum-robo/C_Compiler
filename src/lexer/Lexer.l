@@ -1,12 +1,14 @@
 %{
 #include <stdio.h>
 #include "Token.hpp"
+#include "parser.tab.h" // Hooking up Bison's tokens
 
-void printToken(TokenType type)
+int processToken(TokenType type, int bison_token)
 {
     printf("%-20s | %s\n",
            yytext,
            tokenTypeToString(type));
+    return bison_token;
 }
 
 int colno = 1;
@@ -25,6 +27,7 @@ int current_col = 1;
 
 %option noyywrap
 %option yylineno
+%option never-interactive
 
 %%
 
@@ -45,7 +48,7 @@ int current_col = 1;
         //currentToken = {TokenType::Unknown, yytext};return 1;
 }
     /*  STRING LITERALS  */
-\"([^\"\\\n]|\\.)*\" {printToken(TokenType::StringLiteral);}
+\"([^\"\\\n]|\\.)*\" { return processToken(TokenType::StringLiteral, STRING_LITERAL); }
 
 \"([^\"\\\n]|\\.)*\n {
     fprintf(stderr,
@@ -58,8 +61,8 @@ int current_col = 1;
 }
 
     /*  CHARACTER LITERALS  */
-\'([^\'\\\n]|\\.|\\x[0-9a-fA-F]+)\' {printToken(TokenType::CharacterLiteral); }
-    /*\'([^\'\\\n]|\\.)\' {printToken(TokenType::CharacterLiteral);}*/
+\'([^\'\\\n]|\\.|\\x[0-9a-fA-F]+)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL); }
+    /*\'([^\'\\\n]|\\.)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);}*/
 \'([^\'\\\n]|\\.){2,}\' {
     fprintf(stderr,
         "LEXICAL ERROR:invalid character literal %s at line %d\n",
@@ -78,128 +81,128 @@ int current_col = 1;
 
 
     /*  KEYWORDS  */
-"auto"      { printToken(TokenType::KwAuto); }
-"break"     { printToken(TokenType::KwBreak); }
-"bool"      { printToken(TokenType::KwBool); }
-"case"      { printToken(TokenType::KwCase); }
-"char"      { printToken(TokenType::KwChar); }
-"class"     { printToken(TokenType::KwClass); }
-"const"     { printToken(TokenType::KwConst); }
-"continue"  { printToken(TokenType::KwContinue); }
-"default"   { printToken(TokenType::KwDefault); }
-"delete"    { printToken(TokenType::KwDelete); }
-"do"        { printToken(TokenType::KwDo); }
-"double"    { printToken(TokenType::KwDouble); }
-"else"      { printToken(TokenType::KwElse); }
-"enum"      { printToken(TokenType::KwEnum); }
-"extern"    { printToken(TokenType::KwExtern); }
-"false"     { printToken(TokenType::KwFalse); }
-"float"     { printToken(TokenType::KwFloat); }
-"for"       { printToken(TokenType::KwFor); }
-"goto"      { printToken(TokenType::KwGoto); }
-"if"        { printToken(TokenType::KwIf); }
-"inline"    { printToken(TokenType::KwInline); }
-"int"       { printToken(TokenType::KwInt); }
-"long"      { printToken(TokenType::KwLong); }
-"new"       { printToken(TokenType::KwNew); }
-"public"    { printToken(TokenType::KwPublic); }
-"private"   { printToken(TokenType::KwPrivate); }
-"protected" { printToken(TokenType::KwProtected); }
-"register"  { printToken(TokenType::KwRegister); }
-"restrict"  { printToken(TokenType::KwRestrict); }
-"return"    { printToken(TokenType::KwReturn); }
-"short"     { printToken(TokenType::KwShort); }
-"signed"    { printToken(TokenType::KwSigned); }
-"sizeof"    { printToken(TokenType::KwSizeof); }
-"static"    { printToken(TokenType::KwStatic); }
-"struct"    { printToken(TokenType::KwStruct); }
-"switch"    { printToken(TokenType::KwSwitch); }
-"this"      { printToken(TokenType::KwThis); }
-"true"      { printToken(TokenType::KwTrue); }
-"typedef"   { printToken(TokenType::KwTypedef); }
-"union"     { printToken(TokenType::KwUnion); }
-"unsigned"  { printToken(TokenType::KwUnsigned); }
-"void"      { printToken(TokenType::KwVoid); }
-"volatile"  { printToken(TokenType::KwVolatile); }
-"while"     { printToken(TokenType::KwWhile); }
+"auto"      { return processToken(TokenType::KwAuto, KW_AUTO); }
+"break"     { return processToken(TokenType::KwBreak, KW_BREAK); }
+"bool"      { return processToken(TokenType::KwBool, KW_BOOL); }
+"case"      { return processToken(TokenType::KwCase, KW_CASE); }
+"char"      { return processToken(TokenType::KwChar, KW_CHAR); }
+"class"     { return processToken(TokenType::KwClass, KW_CLASS); }
+"const"     { return processToken(TokenType::KwConst, KW_CONST); }
+"continue"  { return processToken(TokenType::KwContinue, KW_CONTINUE); }
+"default"   { return processToken(TokenType::KwDefault, KW_DEFAULT); }
+"delete"    { return processToken(TokenType::KwDelete, KW_DELETE); }
+"do"        { return processToken(TokenType::KwDo, KW_DO); }
+"double"    { return processToken(TokenType::KwDouble, KW_DOUBLE); }
+"else"      { return processToken(TokenType::KwElse, KW_ELSE); }
+"enum"      { return processToken(TokenType::KwEnum, KW_ENUM); }
+"extern"    { return processToken(TokenType::KwExtern, KW_EXTERN); }
+"false"     { return processToken(TokenType::KwFalse, KW_FALSE); }
+"float"     { return processToken(TokenType::KwFloat, KW_FLOAT); }
+"for"       { return processToken(TokenType::KwFor, KW_FOR); }
+"goto"      { return processToken(TokenType::KwGoto, KW_GOTO); }
+"if"        { return processToken(TokenType::KwIf, KW_IF); }
+"inline"    { return processToken(TokenType::KwInline, KW_INLINE); }
+"int"       { return processToken(TokenType::KwInt, KW_INT); }
+"long"      { return processToken(TokenType::KwLong, KW_LONG); }
+"new"       { return processToken(TokenType::KwNew, KW_NEW); }
+"public"    { return processToken(TokenType::KwPublic, KW_PUBLIC); }
+"private"   { return processToken(TokenType::KwPrivate, KW_PRIVATE); }
+"protected" { return processToken(TokenType::KwProtected, KW_PROTECTED); }
+"register"  { return processToken(TokenType::KwRegister, KW_REGISTER); }
+"restrict"  { return processToken(TokenType::KwRestrict, KW_RESTRICT); }
+"return"    { return processToken(TokenType::KwReturn, KW_RETURN); }
+"short"     { return processToken(TokenType::KwShort, KW_SHORT); }
+"signed"    { return processToken(TokenType::KwSigned, KW_SIGNED); }
+"sizeof"    { return processToken(TokenType::KwSizeof, KW_SIZEOF); }
+"static"    { return processToken(TokenType::KwStatic, KW_STATIC); }
+"struct"    { return processToken(TokenType::KwStruct, KW_STRUCT); }
+"switch"    { return processToken(TokenType::KwSwitch, KW_SWITCH); }
+"this"      { return processToken(TokenType::KwThis, KW_THIS); }
+"true"      { return processToken(TokenType::KwTrue, KW_TRUE); }
+"typedef"   { return processToken(TokenType::KwTypedef, KW_TYPEDEF); }
+"union"     { return processToken(TokenType::KwUnion, KW_UNION); }
+"unsigned"  { return processToken(TokenType::KwUnsigned, KW_UNSIGNED); }
+"void"      { return processToken(TokenType::KwVoid, KW_VOID); }
+"volatile"  { return processToken(TokenType::KwVolatile, KW_VOLATILE); }
+"while"     { return processToken(TokenType::KwWhile, KW_WHILE); }
 
 
     /*  IDENTIFIERS  */
-[a-zA-Z_][a-zA-Z0-9_]* {printToken(TokenType::Identifier);}
+[a-zA-Z_][a-zA-Z0-9_]* { return processToken(TokenType::Identifier, IDENTIFIER); }
 
 
     /*  MULTI-CHARACTER OPERATORS  */
 
-"<<"= {printToken(TokenType::ShiftLeftAssign);}
-">>"= {printToken(TokenType::ShiftRightAssign);}
-"+=" {printToken(TokenType::PlusAssign);}
-"-=" {printToken(TokenType::MinusAssign);}
-"*=" {printToken(TokenType::MultiplyAssign);}
-"/=" {printToken(TokenType::DivideAssign);}
-"%=" {printToken(TokenType::ModuloAssign);}
-"&=" {printToken(TokenType::BitwiseAndAssign);}
-"|=" {printToken(TokenType::BitwiseOrAssign);}
-"^=" {printToken(TokenType::BitwiseXorAssign);}
-"==" {printToken(TokenType::Equal);}
-"!=" {printToken(TokenType::NotEqual);}
-"<=" {printToken(TokenType::LessEqual);}
-">=" {printToken(TokenType::GreaterEqual);}
-"&&" {printToken(TokenType::LogicalAnd);}
-"||" {printToken(TokenType::LogicalOr);}
-"++" {printToken(TokenType::Increment);}
-"--" {printToken(TokenType::Decrement);}
-"<<" {printToken(TokenType::ShiftLeft);}
-">>" {printToken(TokenType::ShiftRight);}
-"->" {printToken(TokenType::Arrow);}
+"<<"= { return processToken(TokenType::ShiftLeftAssign, SHIFT_LEFT_ASSIGN); }
+">>"= { return processToken(TokenType::ShiftRightAssign, SHIFT_RIGHT_ASSIGN); }
+"+="  { return processToken(TokenType::PlusAssign, PLUS_ASSIGN); }
+"-="  { return processToken(TokenType::MinusAssign, MINUS_ASSIGN); }
+"*="  { return processToken(TokenType::MultiplyAssign, MULTIPLY_ASSIGN); }
+"/="  { return processToken(TokenType::DivideAssign, DIVIDE_ASSIGN); }
+"%="  { return processToken(TokenType::ModuloAssign, MODULO_ASSIGN); }
+"&="  { return processToken(TokenType::BitwiseAndAssign, BITWISE_AND_ASSIGN); }
+"|="  { return processToken(TokenType::BitwiseOrAssign, BITWISE_OR_ASSIGN); }
+"^="  { return processToken(TokenType::BitwiseXorAssign, BITWISE_XOR_ASSIGN); }
+"=="  { return processToken(TokenType::Equal, EQUAL); }
+"!="  { return processToken(TokenType::NotEqual, NOT_EQUAL); }
+"<="  { return processToken(TokenType::LessEqual, LESS_EQUAL); }
+">="  { return processToken(TokenType::GreaterEqual, GREATER_EQUAL); }
+"&&"  { return processToken(TokenType::LogicalAnd, LOGICAL_AND); }
+"||"  { return processToken(TokenType::LogicalOr, LOGICAL_OR); }
+"++"  { return processToken(TokenType::Increment, INCREMENT); }
+"--"  { return processToken(TokenType::Decrement, DECREMENT); }
+"<<"  { return processToken(TokenType::ShiftLeft, SHIFT_LEFT); }
+">>"  { return processToken(TokenType::ShiftRight, SHIFT_RIGHT); }
+"->"  { return processToken(TokenType::Arrow, ARROW); }
 
 
     /*  SINGLE-CHAR OPERATORS  */
 
-"+"  { printToken(TokenType::Plus); }
-"-"  { printToken(TokenType::Minus); }
-"*"  { printToken(TokenType::Star); }
-"/"  { printToken(TokenType::Slash); }
-"%"  { printToken(TokenType::Percent); }
-"="  { printToken(TokenType::Assign); }
+"+"  { return processToken(TokenType::Plus, PLUS); }
+"-"  { return processToken(TokenType::Minus, MINUS); }
+"*"  { return processToken(TokenType::Star, STAR); }
+"/"  { return processToken(TokenType::Slash, SLASH); }
+"%"  { return processToken(TokenType::Percent, PERCENT); }
+"="  { return processToken(TokenType::Assign, ASSIGN); }
 
-"<"  { printToken(TokenType::Less); }
-">"  { printToken(TokenType::Greater); }
+"<"  { return processToken(TokenType::Less, LESS); }
+">"  { return processToken(TokenType::Greater, GREATER); }
 
-"!"  { printToken(TokenType::LogicalNot); }
-"&"  { printToken(TokenType::BitwiseAnd); }
-"|"  { printToken(TokenType::BitwiseOr); }
-"^"  { printToken(TokenType::BitwiseXor); }
-"~"  { printToken(TokenType::BitwiseNot); }
+"!"  { return processToken(TokenType::LogicalNot, LOGICAL_NOT); }
+"&"  { return processToken(TokenType::BitwiseAnd, BITWISE_AND); }
+"|"  { return processToken(TokenType::BitwiseOr, BITWISE_OR); }
+"^"  { return processToken(TokenType::BitwiseXor, BITWISE_XOR); }
+"~"  { return processToken(TokenType::BitwiseNot, BITWISE_NOT); }
 
 
     /* Hexadecimal */
-0[xX][0-9a-fA-F]+                         {printToken(TokenType::HexLiteral);}
+0[xX][0-9a-fA-F]+                         { return processToken(TokenType::HexLiteral, HEX_LITERAL); }
 
     /* Floating point */
-[0-9]*\.[0-9]+([eE][+-]?[0-9]+)?[fFlL]?   {printToken(TokenType::FloatLiteral);}
-[0-9]+\.([eE][+-]?[0-9]+)?[fFlL]?         {printToken(TokenType::FloatLiteral);}
-[0-9]+[eE][+-]?[0-9]+[fFlL]?              {printToken(TokenType::FloatLiteral);}
+[0-9]*\.[0-9]+([eE][+-]?[0-9]+)?[fFlL]?   { return processToken(TokenType::FloatLiteral, FLOAT_LITERAL); }
+[0-9]+\.([eE][+-]?[0-9]+)?[fFlL]?         { return processToken(TokenType::FloatLiteral, FLOAT_LITERAL); }
+[0-9]+[eE][+-]?[0-9]+[fFlL]?              { return processToken(TokenType::FloatLiteral, FLOAT_LITERAL); }
 
     /* Integer */
-[0-9]+                                    {printToken(TokenType::IntegerLiteral);}
+[0-9]+                                    { return processToken(TokenType::IntegerLiteral, INTEGER_LITERAL); }
 
 
     /*  PUNCTUATORS  */
 
-";" { printToken(TokenType::Semicolon); }
-"," { printToken(TokenType::Comma); }
-"." { printToken(TokenType::Dot); }
-":" { printToken(TokenType::Colon); }
-"?" { printToken(TokenType::Question); }
+";" { return processToken(TokenType::Semicolon, SEMICOLON); }
+"," { return processToken(TokenType::Comma, COMMA); }
+"." { return processToken(TokenType::Dot, DOT); }
+":" { return processToken(TokenType::Colon, COLON); }
+"?" { return processToken(TokenType::Question, QUESTION); }
 
-"(" { printToken(TokenType::LeftParen); }
-")" { printToken(TokenType::RightParen); }
+"(" { return processToken(TokenType::LeftParen, LEFT_PAREN); }
+")" { return processToken(TokenType::RightParen, RIGHT_PAREN); }
 
-"[" { printToken(TokenType::LeftBracket); }
-"]" { printToken(TokenType::RightBracket); }
+"[" { return processToken(TokenType::LeftBracket, LEFT_BRACKET); }
+"]" { return processToken(TokenType::RightBracket, RIGHT_BRACKET); }
 
-"{" { printToken(TokenType::LeftBrace); }
-"}" { printToken(TokenType::RightBrace); }
+"{" { return processToken(TokenType::LeftBrace, LEFT_BRACE); }
+"}" { return processToken(TokenType::RightBrace, RIGHT_BRACE); }
 
 
     /*  WHITESPACE  */
@@ -218,23 +221,3 @@ int current_col = 1;
 }
 
 %%
-int main(int argc, char **argv)
-{
-    if (argc > 1) {
-        FILE *file = fopen(argv[1], "r");
-
-        if (!file) {
-            perror("Error opening file");
-            return 1;
-        }
-
-        yyin = file;
-    }
-
-    printf("%-20s | %s\n", "Lexeme", "Token");
-    printf("---------------------|----------------------\n");
-
-    yylex();
-
-    return 0;
-}
