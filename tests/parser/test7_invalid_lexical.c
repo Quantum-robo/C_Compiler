@@ -4,3 +4,9 @@ int main() {
     char *s = "unterminated;
     return x;
 }
+
+int main() {
+    int x = 10;
+    /* unterminated comment
+    return x;
+}

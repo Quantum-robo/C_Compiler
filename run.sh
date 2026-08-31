@@ -40,7 +40,7 @@ for test_file in "$TEST_DIR"/*.c; do
     "$PARSER" "$test_file"
     status=$?
 
-    # test5_syntax_errors.c is intentionally invalid.
+    # Files containing "_invalid_" are expected to be rejected.
     if [[ "$test_file" == *"_invalid_"* ]]; then
         if [ $status -ne 0 ]; then
             echo "Result: PASS (error correctly detected)"

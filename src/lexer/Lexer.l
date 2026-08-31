@@ -58,6 +58,8 @@ int current_col = 1;
         yylineno-1
     );
 
+    has_error = 1;
+
         //currentToken = {TokenType::Unknown, yytext};return 1;
 }
     /*  STRING LITERALS  */
