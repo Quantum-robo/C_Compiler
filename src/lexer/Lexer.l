@@ -65,7 +65,7 @@ int current_col = 1;
 
 \"([^\"\\\n]|\\.)*\n {
     fprintf(stderr,
-        "LEXICAL ERROR:unterminated string literal %s at line %d\n",
+        "LEXICAL ERROR: unterminated string literal %s at line %d\n",
         yytext,
         yylineno-1
     );
@@ -80,7 +80,7 @@ int current_col = 1;
     /*\'([^\'\\\n]|\\.)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);}*/
 \'([^\'\\\n]|\\.){2,}\' {
     fprintf(stderr,
-        "LEXICAL ERROR:invalid character literal %s at line %d\n",
+        "LEXICAL ERROR: invalid character literal %s at line %d\n",
         yytext,
         yylineno-1);
 

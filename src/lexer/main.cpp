@@ -1,7 +1,18 @@
 #include <stdio.h>
+#include <vector>
+#include <string>
 
 extern int yylex();
 extern FILE* yyin;
+
+int has_error = 0;
+
+struct LexedToken {
+    std::string token;
+    std::string token_type;
+};
+
+extern std::vector<LexedToken> lexed_tokens;
 
 int main(int argc, char **argv) {
     if (argc > 1) {
@@ -16,12 +27,15 @@ int main(int argc, char **argv) {
     printf("%-20s | %s\n", "Token", "Token_Type");
     printf("---------------------|----------------------\n");
 
-    // Loop through all tokens until EOF (which returns 0)
-    // The printing is handled by processToken inside Lexer.l!
     while (yylex() != 0) {
         // Keep consuming tokens
     }
 
-    return 0;
-}
+    for (const auto& token : lexed_tokens) {
+        printf("%-20s | %s\n",
+               token.token.c_str(),
+               token.token_type.c_str());
+    }
 
+    return has_error ? 1 : 0;
+}

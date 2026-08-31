@@ -41,9 +41,9 @@ for test_file in "$TEST_DIR"/*.c; do
     status=$?
 
     # test5_syntax_errors.c is intentionally invalid.
-    if [[ "$test_file" == *"test5_syntax_errors.c" ]]; then
+    if [[ "$test_file" == *"_invalid_"* ]]; then
         if [ $status -ne 0 ]; then
-            echo "Result: PASS (syntax errors correctly detected)"
+            echo "Result: PASS (error correctly detected)"
             passed=$((passed + 1))
         else
             echo "Result: FAIL (invalid program was accepted)"
