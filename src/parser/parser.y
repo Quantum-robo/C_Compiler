@@ -42,12 +42,11 @@ int has_error = 0;
 %token LEFT_PAREN RIGHT_PAREN LEFT_BRACKET RIGHT_BRACKET LEFT_BRACE RIGHT_BRACE
 
 /* Precedence rules */
-%right ASSIGN
-%left EQUAL NOT_EQUAL
-%left LESS GREATER LESS_EQUAL GREATER_EQUAL
-%left PLUS MINUS
-%left STAR SLASH PERCENT
-%nonassoc INCREMENT DECREMENT
+
+
+/* Dangling-else declarations */
+%nonassoc LOWER_THAN_ELSE
+%nonassoc KW_ELSE
 
 %start program
 
@@ -154,6 +153,12 @@ block_item
 declaration
     : declaration_specifiers IDENTIFIER ASSIGN expression SEMICOLON
     | declaration_specifiers IDENTIFIER SEMICOLON
+    | declaration_specifiers IDENTIFIER array_suffix SEMICOLON
+    ;
+
+array_suffix
+    : LEFT_BRACKET expression RIGHT_BRACKET
+    | array_suffix LEFT_BRACKET expression RIGHT_BRACKET
     ;
 
 declaration_specifiers
@@ -172,11 +177,13 @@ statement
     | jump_statement
     | expression_statement
     | compound_statement
+    | error SEMICOLON
     ;
 
 selection_statement
-    : KW_IF LEFT_PAREN expression RIGHT_PAREN statement
+    : KW_IF LEFT_PAREN expression RIGHT_PAREN statement %prec LOWER_THAN_ELSE
     | KW_IF LEFT_PAREN expression RIGHT_PAREN statement KW_ELSE statement
+    | KW_IF error statement %prec LOWER_THAN_ELSE
     ;
 
 iteration_statement
@@ -202,23 +209,134 @@ expression_opt
 
 /* Added support for `this->value` in expressions */
 expression
+    : assignment_expression
+    ;
+
+assignment_expression
+    : conditional_expression
+    | unary_expression assignment_operator assignment_expression
+    ;
+
+assignment_operator
+    : ASSIGN
+    | PLUS_ASSIGN
+    | MINUS_ASSIGN
+    | MULTIPLY_ASSIGN
+    | DIVIDE_ASSIGN
+    | MODULO_ASSIGN
+    | BITWISE_AND_ASSIGN
+    | BITWISE_OR_ASSIGN
+    | BITWISE_XOR_ASSIGN
+    | SHIFT_LEFT_ASSIGN
+    | SHIFT_RIGHT_ASSIGN
+    ;
+
+conditional_expression
+    : logical_or_expression
+    | logical_or_expression QUESTION expression COLON conditional_expression
+    ;
+
+logical_or_expression
+    : logical_and_expression
+    | logical_or_expression LOGICAL_OR logical_and_expression
+    ;
+
+logical_and_expression
+    : bitwise_or_expression
+    | logical_and_expression LOGICAL_AND bitwise_or_expression
+    ;
+
+bitwise_or_expression
+    : bitwise_xor_expression
+    | bitwise_or_expression BITWISE_OR bitwise_xor_expression
+    ;
+
+bitwise_xor_expression
+    : bitwise_and_expression
+    | bitwise_xor_expression BITWISE_XOR bitwise_and_expression
+    ;
+
+bitwise_and_expression
+    : equality_expression
+    | bitwise_and_expression BITWISE_AND equality_expression
+    ;
+
+equality_expression
+    : relational_expression
+    | equality_expression EQUAL relational_expression
+    | equality_expression NOT_EQUAL relational_expression
+    ;
+
+relational_expression
+    : shift_expression
+    | relational_expression LESS shift_expression
+    | relational_expression LESS_EQUAL shift_expression
+    | relational_expression GREATER shift_expression
+    | relational_expression GREATER_EQUAL shift_expression
+    ;
+
+shift_expression
+    : additive_expression
+    | shift_expression SHIFT_LEFT additive_expression
+    | shift_expression SHIFT_RIGHT additive_expression
+    ;
+
+additive_expression
+    : multiplicative_expression
+    | additive_expression PLUS multiplicative_expression
+    | additive_expression MINUS multiplicative_expression
+    ;
+
+multiplicative_expression
+    : unary_expression
+    | multiplicative_expression STAR unary_expression
+    | multiplicative_expression SLASH unary_expression
+    | multiplicative_expression PERCENT unary_expression
+    ;
+
+unary_expression
+    : postfix_expression
+    | PLUS unary_expression
+    | MINUS unary_expression
+    | LOGICAL_NOT unary_expression
+    | BITWISE_NOT unary_expression
+    | BITWISE_AND unary_expression
+    | STAR unary_expression
+    | INCREMENT unary_expression
+    | DECREMENT unary_expression
+    ;
+
+postfix_expression
+    : primary_expression
+    | postfix_expression INCREMENT
+    | postfix_expression DECREMENT
+    | postfix_expression LEFT_BRACKET expression RIGHT_BRACKET
+    | postfix_expression LEFT_PAREN argument_list_opt RIGHT_PAREN
+    | postfix_expression DOT IDENTIFIER
+    | postfix_expression ARROW IDENTIFIER
+    ;
+
+primary_expression
     : IDENTIFIER
     | INTEGER_LITERAL
+    | HEX_LITERAL
     | FLOAT_LITERAL
     | CHAR_LITERAL
+    | STRING_LITERAL
     | KW_TRUE
     | KW_FALSE
-    | KW_THIS ARROW IDENTIFIER
-    | KW_THIS ARROW IDENTIFIER ASSIGN expression
-    | expression ASSIGN expression
-    | expression EQUAL expression
-    | expression NOT_EQUAL expression
-    | expression LESS expression
-    | expression GREATER expression
-    | expression PLUS expression
-    | expression MINUS expression
-    | expression INCREMENT
-    | expression DECREMENT
+    | KW_THIS
+    | LEFT_PAREN expression RIGHT_PAREN
+    ;
+
+argument_list_opt
+    : /* empty */
+    | argument_list
+    ;
+
+argument_list
+    : expression
+    | argument_list COMMA expression
     ;
 
 %%
