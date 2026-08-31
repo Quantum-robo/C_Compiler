@@ -40,8 +40,8 @@ for test_file in "$TEST_DIR"/*.c; do
     "$PARSER" "$test_file"
     status=$?
 
-    # Files containing "_invalid_" are expected to be rejected.
-    if [[ "$test_file" == *"_invalid_"* ]]; then
+    # Files containing "_invalid" are expected to be rejected.
+    if [[ "$test_file" == *"_invalid"* ]]; then
         if [ $status -ne 0 ]; then
             echo "Result: PASS (error correctly detected)"
             passed=$((passed + 1))
