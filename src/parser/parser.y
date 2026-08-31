@@ -2,11 +2,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
+#include <string>
 
 extern int yylex();
 extern int yylineno;
 extern char* yytext;
 extern FILE* yyin;
+
+struct LexedToken {
+    std::string token;
+    std::string token_type;
+};
+
+extern std::vector<LexedToken> lexed_tokens;
 
 void yyerror(const char* s);
 int has_error = 0;
@@ -52,126 +61,126 @@ int has_error = 0;
 
 %%
 
-program
+    program
     : external_declaration_list
     ;
 
-external_declaration_list
+    external_declaration_list
     : external_declaration
     | external_declaration_list external_declaration
     ;
 
-/* Added class and struct to external declarations */
-external_declaration
+    /* Added class and struct to external declarations */
+    external_declaration
     : function_definition
     | declaration
     | class_definition
     | struct_definition
     ;
 
-/* --- CLASSES & STRUCTS --- */
-class_definition
+    /* --- CLASSES & STRUCTS --- */
+    class_definition
     : KW_CLASS IDENTIFIER LEFT_BRACE class_member_list_opt RIGHT_BRACE SEMICOLON
     ;
 
-struct_definition
+    struct_definition
     : KW_STRUCT IDENTIFIER LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON
     ;
 
-class_member_list_opt
+    class_member_list_opt
     : /* empty */
     | class_member_list
     ;
 
-class_member_list
+    class_member_list
     : class_member
     | class_member_list class_member
     ;
 
-/* Class members can have access modifiers (public:), variables, or functions */
-class_member
+    /* Class members can have access modifiers (public:), variables, or functions */
+    class_member
     : access_specifier COLON
     | declaration
     | function_definition
     ;
 
-struct_member_list_opt
+    struct_member_list_opt
     : /* empty */
     | struct_member_list
     ;
 
-struct_member_list
+    struct_member_list
     : declaration
     | struct_member_list declaration
     ;
 
-access_specifier
+    access_specifier
     : KW_PUBLIC
     | KW_PRIVATE
     | KW_PROTECTED
     ;
 
-/* --- FUNCTIONS --- */
-function_definition
+    /* --- FUNCTIONS --- */
+    function_definition
     : declaration_specifiers IDENTIFIER LEFT_PAREN parameter_list_opt RIGHT_PAREN compound_statement
     ;
 
-parameter_list_opt
+    parameter_list_opt
     : /* empty */
     | parameter_list
     ;
 
-parameter_list
+    parameter_list
     : parameter_declaration
     | parameter_list COMMA parameter_declaration
     ;
 
-parameter_declaration
+    parameter_declaration
     : declaration_specifiers IDENTIFIER
     ;
 
-/* --- STATEMENTS & BLOCKS --- */
-compound_statement
+    /* --- STATEMENTS & BLOCKS --- */
+    compound_statement
     : LEFT_BRACE block_item_list_opt RIGHT_BRACE
     ;
 
-block_item_list_opt
+    block_item_list_opt
     : /* empty */
     | block_item_list
     ;
 
-block_item_list
+    block_item_list
     : block_item
     | block_item_list block_item
     ;
 
-block_item
+    block_item
     : declaration
     | statement
     ;
 
-declaration
+    declaration
     : declaration_specifiers IDENTIFIER ASSIGN expression SEMICOLON
     | declaration_specifiers IDENTIFIER SEMICOLON
     | declaration_specifiers IDENTIFIER array_suffix SEMICOLON
     ;
 
-array_suffix
+    array_suffix
     : LEFT_BRACKET expression RIGHT_BRACKET
     | array_suffix LEFT_BRACKET expression RIGHT_BRACKET
     ;
 
-declaration_specifiers
+    declaration_specifiers
     : type_specifier
     | KW_CONST type_specifier
     ;
 
-type_specifier
+    type_specifier
     : KW_INT | KW_FLOAT | KW_CHAR | KW_BOOL | KW_DOUBLE | KW_VOID
     ;
 
 
-statement
+    statement
     : selection_statement
     | iteration_statement
     | jump_statement
@@ -180,44 +189,44 @@ statement
     | error SEMICOLON
     ;
 
-selection_statement
+    selection_statement
     : KW_IF LEFT_PAREN expression RIGHT_PAREN statement %prec LOWER_THAN_ELSE
     | KW_IF LEFT_PAREN expression RIGHT_PAREN statement KW_ELSE statement
     | KW_IF error statement %prec LOWER_THAN_ELSE
     ;
 
-iteration_statement
+    iteration_statement
     : KW_WHILE LEFT_PAREN expression RIGHT_PAREN statement
     | KW_FOR LEFT_PAREN expression_opt SEMICOLON expression_opt SEMICOLON expression_opt RIGHT_PAREN statement
     | KW_FOR LEFT_PAREN declaration expression_opt SEMICOLON expression_opt RIGHT_PAREN statement
     ;
 
-jump_statement
+    jump_statement
     : KW_BREAK SEMICOLON
     | KW_CONTINUE SEMICOLON
     | KW_RETURN expression_opt SEMICOLON
     ;
 
-expression_statement
+    expression_statement
     : expression_opt SEMICOLON
     ;
 
-expression_opt
+    expression_opt
     : /* empty */
     | expression
     ;
 
-/* Added support for `this->value` in expressions */
-expression
+    /* Added support for `this->value` in expressions */
+    expression
     : assignment_expression
     ;
 
-assignment_expression
+    assignment_expression
     : conditional_expression
     | unary_expression assignment_operator assignment_expression
     ;
 
-assignment_operator
+    assignment_operator
     : ASSIGN
     | PLUS_ASSIGN
     | MINUS_ASSIGN
@@ -231,43 +240,43 @@ assignment_operator
     | SHIFT_RIGHT_ASSIGN
     ;
 
-conditional_expression
+    conditional_expression
     : logical_or_expression
     | logical_or_expression QUESTION expression COLON conditional_expression
     ;
 
-logical_or_expression
+    logical_or_expression
     : logical_and_expression
     | logical_or_expression LOGICAL_OR logical_and_expression
     ;
 
-logical_and_expression
+    logical_and_expression
     : bitwise_or_expression
     | logical_and_expression LOGICAL_AND bitwise_or_expression
     ;
 
-bitwise_or_expression
+    bitwise_or_expression
     : bitwise_xor_expression
     | bitwise_or_expression BITWISE_OR bitwise_xor_expression
     ;
 
-bitwise_xor_expression
+    bitwise_xor_expression
     : bitwise_and_expression
     | bitwise_xor_expression BITWISE_XOR bitwise_and_expression
     ;
 
-bitwise_and_expression
+    bitwise_and_expression
     : equality_expression
     | bitwise_and_expression BITWISE_AND equality_expression
     ;
 
-equality_expression
+    equality_expression
     : relational_expression
     | equality_expression EQUAL relational_expression
     | equality_expression NOT_EQUAL relational_expression
     ;
 
-relational_expression
+    relational_expression
     : shift_expression
     | relational_expression LESS shift_expression
     | relational_expression LESS_EQUAL shift_expression
@@ -275,26 +284,26 @@ relational_expression
     | relational_expression GREATER_EQUAL shift_expression
     ;
 
-shift_expression
+    shift_expression
     : additive_expression
     | shift_expression SHIFT_LEFT additive_expression
     | shift_expression SHIFT_RIGHT additive_expression
     ;
 
-additive_expression
+    additive_expression
     : multiplicative_expression
     | additive_expression PLUS multiplicative_expression
     | additive_expression MINUS multiplicative_expression
     ;
 
-multiplicative_expression
+    multiplicative_expression
     : unary_expression
     | multiplicative_expression STAR unary_expression
     | multiplicative_expression SLASH unary_expression
     | multiplicative_expression PERCENT unary_expression
     ;
 
-unary_expression
+    unary_expression
     : postfix_expression
     | PLUS unary_expression
     | MINUS unary_expression
@@ -306,7 +315,7 @@ unary_expression
     | DECREMENT unary_expression
     ;
 
-postfix_expression
+    postfix_expression
     : primary_expression
     | postfix_expression INCREMENT
     | postfix_expression DECREMENT
@@ -316,7 +325,7 @@ postfix_expression
     | postfix_expression ARROW IDENTIFIER
     ;
 
-primary_expression
+    primary_expression
     : IDENTIFIER
     | INTEGER_LITERAL
     | HEX_LITERAL
@@ -329,12 +338,12 @@ primary_expression
     | LEFT_PAREN expression RIGHT_PAREN
     ;
 
-argument_list_opt
+    argument_list_opt
     : /* empty */
     | argument_list
     ;
 
-argument_list
+    argument_list
     : expression
     | argument_list COMMA expression
     ;
@@ -356,14 +365,21 @@ int main(int argc, char** argv) {
         yyin = file;
     }
 
+    int res = yyparse();
+
+if (res == 0 && !has_error) {
     printf("%-20s | %s\n", "Token", "Token_Type");
     printf("---------------------|----------------------\n");
 
-    int res = yyparse();
-    
-    if (res == 0 && !has_error) {
-        printf("\n=> PARSE SUCCESSFUL: No syntax errors found.\n");
+    for (const auto& token : lexed_tokens) {
+        printf("%-20s | %s\n",
+               token.token.c_str(),
+               token.token_type.c_str());
     }
 
+    printf("\n=> PARSE SUCCESSFUL: No syntax errors found.\n");
     return 0;
+}
+
+    return 1;
 }

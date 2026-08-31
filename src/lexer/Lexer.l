@@ -2,12 +2,25 @@
 #include <stdio.h>
 #include "Token.hpp"
 #include "parser.tab.h" // Hooking up Bison's tokens
+extern int has_error;
+
+#include <vector>
+#include <string>
+
+struct LexedToken {
+    std::string token;
+    std::string token_type;
+};
+
+std::vector<LexedToken> lexed_tokens;
 
 int processToken(TokenType type, int bison_token)
 {
-    printf("%-20s | %s\n",
-           yytext,
-           tokenTypeToString(type));
+    lexed_tokens.push_back({
+        yytext,
+        tokenTypeToString(type)
+    });
+
     return bison_token;
 }
 
@@ -57,6 +70,8 @@ int current_col = 1;
         yylineno-1
     );
 
+    has_error = 1;
+
      // currentToken = {TokenType::Unknown, yytext};return 1;
 }
 
@@ -68,6 +83,9 @@ int current_col = 1;
         "LEXICAL ERROR:invalid character literal %s at line %d\n",
         yytext,
         yylineno-1);
+
+        has_error = 1;
+
         }
 
 \'([^\'\\\n]|\\.)*\n {
@@ -77,6 +95,8 @@ int current_col = 1;
         yytext,
         yylineno-1
     );
+
+    has_error = 1;
 }
 
 
@@ -218,6 +238,8 @@ int current_col = 1;
         yytext,
         yylineno
     );
+
+    has_error = 1;
 }
 
 %%
