@@ -8,6 +8,7 @@ The project contains a lexical analyzer that recognizes tokens and a Bison-based
 
 ```text
 C_Compiler/
+
 ├── src/
 │   ├── lexer/
 │   │   ├── Lexer.l
@@ -16,18 +17,19 @@ C_Compiler/
 │   │   └── main.cpp
 │   └── parser/
 │       └── parser.y
+
 ├── tests/
 │   └── parser/
 │       ├── test1_types_and_vars.c
 │       ├── test2_control_flow.c
 │       ├── test3_functions.c
-│       ├── test4_oop_and_structs.c
-│       ├── test5_invalid_syntax.c
-│       ├── test6_expressions_and_arrays.c
-│       └── test7_invalid_lexical.c
+│       ├── test4_oop_structs_expressions.c
+│       └── test5_invalid.c
+
 ├── scripts/
 │   ├── run_lexer.sh
 │   └── run_parser.sh
+
 ├── Makefile
 ├── run.sh
 └── README.md
@@ -115,19 +117,35 @@ SYNTAX ERROR: syntax error at line 3 (near ';')
 
 The parser returns a non-zero exit status when an error is detected.
 
+## Running the Standalone Lexer
+
+The lexer can also be executed independently:
+
+```bash
+./lexer <source_file>
+```
+
+For example:
+
+```bash
+./lexer tests/parser/test1_types_and_vars.c
+```
+
+The standalone lexer prints each recognized token and its corresponding token type.
+
+Lexical errors are reported to `stderr`, and the lexer returns a non-zero exit status if a lexical error is encountered.
+
 ## Test Suite
 
-Seven parser test cases are included.
+Five parser test cases are included.
 
-| Test                             | Purpose                                                                   |
-| -------------------------------- | ------------------------------------------------------------------------- |
-| `test1_types_and_vars.c`         | Data types, declarations, literals, initialization                        |
-| `test2_control_flow.c`           | `if`, `else`, `while`, `for`, `break`, increment/decrement                |
-| `test3_functions.c`              | Function definitions, parameters, return statements                       |
-| `test4_oop_and_structs.c`        | Classes, structs, access specifiers, `this->`                             |
-| `test5_invalid_syntax.c`         | Missing expressions, parentheses, and semicolons                          |
-| `test6_expressions_and_arrays.c` | Expressions, operators, arrays, function calls, conditional operator      |
-| `test7_invalid_lexical.c`        | Invalid characters, character literals, and unterminated strings/comments |
+| Test                              | Purpose                                                                                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `test1_types_and_vars.c`          | Data types, declarations, literals, and initialization                                                     |
+| `test2_control_flow.c`            | `if`, `else`, `while`, `for`, `break`, increment/decrement                                                 |
+| `test3_functions.c`               | Function definitions, parameters, return statements, and function calls                                    |
+| `test4_oop_structs_expressions.c` | Classes, structs, access specifiers, `this->`, expressions, operators, arrays, and conditional expressions |
+| `test5_invalid.c`                 | Syntax and lexical error detection                                                                         |
 
 Run the complete parser test suite using:
 
@@ -135,13 +153,18 @@ Run the complete parser test suite using:
 ./run.sh ./parser
 ```
 
-The script automatically runs every `.c` file in `tests/parser/` and distinguishes valid tests from tests whose filenames contain `_invalid_`.
+The script automatically runs every `.c` file in `tests/parser/`.
+
+Files whose names contain `_invalid_` are treated as expected-error tests. For these tests, a non-zero parser exit status is considered a successful result.
 
 A successful run reports:
 
 ```text
-Total:  7
-Passed: 7
+==============================
+Test Summary
+==============================
+Total:  5
+Passed: 5
 Failed: 0
 
 All parser tests passed!
@@ -156,7 +179,7 @@ make test-lexer
 
 ## Language Features
 
-The parser implements a C-like language subset supporting:
+The parser implements a **C-like language subset** supporting:
 
 ### Data Types
 
@@ -173,9 +196,13 @@ void
 
 ```c
 int x;
+
 int x = 10;
+
 float value = 3.14;
+
 char c = 'a';
+
 bool flag = true;
 ```
 
@@ -212,8 +239,10 @@ The grammar supports:
 * Conditional (`?:`) expressions
 * Parenthesized expressions
 * Function calls
+* Array indexing
+* `this->member` access
 
-Operator precedence is explicitly defined in the Bison grammar.
+Operator precedence and associativity are explicitly defined in the Bison grammar.
 
 ### Arrays
 
@@ -221,6 +250,7 @@ Operator precedence is explicitly defined in the Bison grammar.
 int values[10];
 
 values[0] = 5;
+
 values[1]++;
 ```
 
@@ -235,6 +265,7 @@ struct Point {
 
 ```c
 class MyClass {
+
 private:
     int value;
 
@@ -242,6 +273,7 @@ public:
     void setValue(int v) {
         this->value = v;
     }
+
 };
 ```
 
@@ -279,19 +311,21 @@ Lexical errors include:
 
 The analyzer reports errors without silently accepting invalid input.
 
-### Syntax error
+### Syntax Error
 
 ```text
 SYNTAX ERROR: syntax error at line 3 (near ';')
 ```
 
-### Lexical error
+### Lexical Error
 
 ```text
-LEXICAL ERROR: invalid character literal 'ab' at line 2
+LEXICAL ERROR: invalid character literal 'ab' at line 5
 ```
 
-The parser sets an error status when either lexical or syntax errors are detected.
+Both lexical and syntax errors cause the parser to return a non-zero exit status.
+
+This allows the automated test script to distinguish successfully parsed programs from programs containing errors.
 
 ## Scope
 
@@ -318,5 +352,7 @@ The project uses:
 * **C++17** for compilation and supporting code
 
 Bison generates the parser source and header files, while Flex generates the lexer source.
+
+The parser and standalone lexer share the generated lexer implementation. The standalone lexer uses `src/lexer/main.cpp`, while the parser links the generated Bison parser with the same lexer.
 
 Generated files and compiled binaries are excluded from version control through `.gitignore`.
