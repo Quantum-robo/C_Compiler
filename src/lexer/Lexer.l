@@ -44,10 +44,11 @@ int current_col = 1;
 
 %%
 
-    /* COMMENTS */
-    //  "//".* {/* Ignore single-line comment */}
+    /* PREPROCESSOR DIRECTIVES */
+"#"[^\n]*                               { /* ignore preprocessor directives */ }
 
-    //  "/*"([^*]|\*+[^*/])*\*+"/" {/* Ignore multi-line comment */}
+    /* COMMENTS */
+
 
 "//".*                                  {   /* ignore */ }
 "/*"([^*]|\*+[^*/])*\*+"/"             {    /* ignore */ }
@@ -88,6 +89,7 @@ int current_col = 1;
 
         has_error = 1;
 
+        return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);
         }
 
 \'([^\'\\\n]|\\.)*\n {
