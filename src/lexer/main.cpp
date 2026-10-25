@@ -1,18 +1,11 @@
 #include <stdio.h>
-#include <vector>
-#include <string>
-
+#include "Token.hpp"
+#include "parser.tab.h"
+YYSTYPE yylval;
 extern int yylex();
 extern FILE* yyin;
 
 int has_error = 0;
-
-struct LexedToken {
-    std::string token;
-    std::string token_type;
-};
-
-extern std::vector<LexedToken> lexed_tokens;
 
 int main(int argc, char **argv) {
     if (argc > 1) {

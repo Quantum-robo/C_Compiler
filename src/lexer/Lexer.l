@@ -1,16 +1,9 @@
 %{
 #include <stdio.h>
+#include <string.h> // For strdup
 #include "Token.hpp"
 #include "parser.tab.h" // Hooking up Bison's tokens
 extern int has_error;
-
-#include <vector>
-#include <string>
-
-struct LexedToken {
-    std::string token;
-    std::string token_type;
-};
 
 std::vector<LexedToken> lexed_tokens;
 
@@ -20,6 +13,9 @@ int processToken(TokenType type, int bison_token)
         yytext,
         tokenTypeToString(type)
     });
+
+    // Pass string value to Bison for identifiers and literals
+    yylval.str = strdup(yytext);
 
     return bison_token;
 }

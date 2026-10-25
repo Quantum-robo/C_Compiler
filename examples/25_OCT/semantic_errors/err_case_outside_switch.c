@@ -1,0 +1,5 @@
+// EXPECT: case label not within a switch statement
+int main() {
+    case 1:
+        return 0;
+}
