@@ -9,7 +9,8 @@ every output, so one `.s` file is a complete program.
 spim -file prog.s              # run it  (sudo apt install spim)
 ```
 
-`QtSpim` and MARS can load the same file. A program's `main` return value is its exit code.
+`QtSpim` and MARS can load the same file. A program's `main` return value is its exit code. `int main(int argc, char **argv)` receives SPIM's `argc` / `argv`
+(`spim -file prog.s arg1 arg2`).
 
 ## Scheme
 
@@ -74,17 +75,17 @@ other arguments on the stack right behind it (`&fmt + 4`).
 
 | Header        | Functions provided                                                                                       |
 | ------------- | -------------------------------------------------------------------------------------------------------- |
-| `stdio.h`     | `printf` (`%d %i %u %x %X %o %c %s %p %%`; flags `- 0 + space`; width, `*`, `.precision` for `%s`; `l`/`h` ignored), `scanf` (`%d %i %u %x %o %c %s %%`; width, `%*d`, `h`; returns the count or -1 at end of input), `putchar`, `puts`, `getchar`, `gets` |
+| `stdio.h`     | `printf` (`%d %i %u %x %X %o %c %s %p %%`; flags `- 0 + space`; width, `*`, `.precision` for `%s`; `l`/`h` ignored), `scanf` (`%d %i %u %x %o %c %s %%`; width, `%*d`, `h`; returns the count or -1 at end of input), `sprintf`, `snprintf` (same conversions as `printf`), `putchar`, `puts`, `getchar`, `gets` |
 | `stdlib.h`    | `malloc`, `calloc`, `realloc`, `free` (free list kept sorted by address, neighbours merged), `abs`, `labs`, `atoi`, `rand`, `srand`, `exit` |
 | `string.h`    | `strlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `memset`, `memcpy`, `memmove`, `memcmp` |
 | `ctype.h`     | `isdigit`, `isalpha`, `isalnum`, `isupper`, `islower`, `isspace`, `isprint`, `ispunct`, `isxdigit`, `toupper`, `tolower` |
 
-`new` / `delete` compile to `malloc` / `free`. A call to any other library function (`sprintf`, `fopen`, `sqrt`, ...) is a
+`new` / `delete` compile to `malloc` / `free`. A call to any other library function (`fopen`, `sscanf`, `sqrt`, ...) is a
 `CODE GENERATION ERROR`. Input is read a line at a time (SPIM reports end of input only through `read_string`).
 
 ## Limits
 
-* No floating point yet (`float` / `double` literals are rejected with a clear message); no file I/O, `sprintf` or math library.
+* No floating point yet (`float` / `double` literals are rejected with a clear message); no file I/O, `sscanf` or math library.
 * `rand` is a simple linear congruential generator, not the C library's sequence.
 * Function arguments are evaluated left to right (C leaves the order unspecified).
 * `cond ? a : b` is never an lvalue, so `return flag ? a : b;` is not allowed in a function returning a reference.

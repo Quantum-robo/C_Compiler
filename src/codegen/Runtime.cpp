@@ -323,9 +323,24 @@ int puts(char *s) {
     return 0;
 }
 
+/* Output goes to the console, or into a buffer while sprintf / snprintf run. */
+char *rt_sink = 0;
+int rt_limit = -1;
+
+void rt_put(int c) {
+    if (rt_sink == 0) {
+        __sys_putchar(c);
+        return;
+    }
+    if (rt_limit == 0) return;
+    *rt_sink = c;
+    rt_sink++;
+    if (rt_limit > 0) rt_limit--;
+}
+
 void rt_pad(int n, int c) {
     while (n > 0) {
-        __sys_putchar(c);
+        rt_put(c);
         n--;
     }
 }
@@ -338,9 +353,9 @@ int rt_emit(char *s, int len, int sign, int width, int left, int zero) {
     if (sign != 0) total++;
     if (width > total) pad = width - total;
     if (!left && !zero) rt_pad(pad, ' ');
-    if (sign != 0) __sys_putchar(sign);
+    if (sign != 0) rt_put(sign);
     if (!left && zero) rt_pad(pad, '0');
-    for (i = 0; i < len; i++) __sys_putchar(s[i]);
+    for (i = 0; i < len; i++) rt_put(s[i]);
     if (left) rt_pad(pad, ' ');
     return total + pad;
 }
@@ -369,14 +384,13 @@ int rt_digits(int v, int base, int upper, char *out) {
     return n;
 }
 
-/* printf(format, ...): %d %i %u %x %X %o %c %s %p %% with flags - 0 + space, a width (or *) and .precision for %s */
-int printf(char *fmt) {
-    void *ap = &fmt;
-    ap = ap + 4;
+/* The formatting engine behind printf, sprintf and snprintf: %d %i %u %x %X %o %c %s %p %% with flags - 0 + space,
+   a width (or *) and .precision for %s. "ap" points at the first argument; returns the number of characters. */
+int rt_format(char *fmt, void *ap) {
     int count = 0;
     while (*fmt != 0) {
         if (*fmt != '%') {
-            __sys_putchar(*fmt);
+            rt_put(*fmt);
             fmt++;
             count++;
             continue;
@@ -417,7 +431,7 @@ int printf(char *fmt) {
         if (spec == 0) break;
         fmt++;
         if (spec == '%') {
-            __sys_putchar('%');
+            rt_put('%');
             count++;
             continue;
         }
@@ -447,8 +461,8 @@ int printf(char *fmt) {
             count += rt_emit(buf, rt_digits(*ip, base, spec == 'X', buf), 0, width, left, zero);
         } else if (spec == 'p') {
             int *ip = slot;
-            __sys_putchar('0');
-            __sys_putchar('x');
+            rt_put('0');
+            rt_put('x');
             count += 2 + rt_emit(buf, rt_digits(*ip, 16, 0, buf), 0, width, left, 0);
         } else if (spec == 'c') {
             int *ip = slot;
@@ -463,12 +477,42 @@ int printf(char *fmt) {
             if (prec >= 0 && prec < len) len = prec;
             count += rt_emit(s, len, 0, width, left, 0);
         } else {
-            __sys_putchar('%');
-            __sys_putchar(spec);
+            rt_put('%');
+            rt_put(spec);
             count += 2;
         }
     }
     return count;
+}
+
+int printf(char *fmt) {
+    void *ap = &fmt;
+    ap = ap + 4;
+    return rt_format(fmt, ap);
+}
+
+int sprintf(char *buf, char *fmt) {
+    void *ap = &fmt;
+    int n;
+    ap = ap + 4;
+    rt_sink = buf;
+    rt_limit = -1;
+    n = rt_format(fmt, ap);
+    *rt_sink = 0;
+    rt_sink = 0;
+    return n;
+}
+
+int snprintf(char *buf, int size, char *fmt) {
+    void *ap = &fmt;
+    int n;
+    ap = ap + 4;
+    rt_sink = buf;
+    rt_limit = size > 0 ? size - 1 : 0;
+    n = rt_format(fmt, ap);
+    if (size > 0) *rt_sink = 0;
+    rt_sink = 0;
+    return n;
 }
 
 /* ------------------------------ console input ---------------------------- */

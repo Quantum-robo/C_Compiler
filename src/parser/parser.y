@@ -6,6 +6,7 @@
     struct ParamList;
     struct InitNode;
     struct Ctx;
+    struct CastTy;
 }
 
 %{
@@ -30,6 +31,8 @@ extern FILE* yyin;
 extern int colno;
 extern void yyrestart(FILE*);
 extern FILE* diag_out;                 // where diagnostics are written (muted during the first pass)
+extern bool (*type_name_hook)(const char*);   // the lexer asks this whether an identifier is a type name
+extern void lexer_reset_macros();             // forget the #defines before the program is read again
 
 void yyerror(const char* s);
 int has_error = 0;
@@ -118,6 +121,7 @@ struct Declarator {
 
 struct DeclSpec {
     std::string type;
+    bool isUnsigned = false;           // "unsigned" was written (only a cast to unsigned char / short uses it)
     bool isStatic = false;
     bool isTypedef = false;
     bool isConst = false;
@@ -295,7 +299,15 @@ static std::string resolveName(const std::string& n) {
     return n;
 }
 
+// Names of structs, classes, unions and enums seen so far; the lexer returns them as TYPE_NAME, so that
+// "Point p;" and "Counter *c;" are declarations (the keyword is optional).
+static std::set<std::string> typeNames;
+// (a variable that is currently declared with the same name hides the type name)
+static bool isTypeNameHook(const char* s) { return typeNames.count(s) > 0 && !lookupSym(s); }
+static int anonCount = 0;
+
 static void beginAggr(const std::string& name, bool isClass, bool isUnion = false) {
+    typeNames.insert(name);
     AggrFrame f;
     f.name = cur_aggr;
     f.memberCtx = in_member_ctx;
@@ -307,6 +319,13 @@ static void beginAggr(const std::string& name, bool isClass, bool isUnion = fals
     cur_access = isClass ? 2 : 0;      // class members default to private
     aggrMembers[name];
     layoutBuild.beginAggr(name, isUnion, isClass);
+}
+
+// An unnamed struct / union written inside another type or a declaration gets a generated name.
+static char* anonAggr(bool isUnion) {
+    std::string name = "__anon" + std::to_string(++anonCount);
+    beginAggr(name, false, isUnion);
+    return strdup(name.c_str());
 }
 
 // Names used inside method bodies that were not yet known when the body was
@@ -1723,6 +1742,79 @@ static void endSwitch() {
    sizeof / new / delete
    ------------------------------------------------------------------ */
 
+// A type written in a cast: the base type name, the number of '*', and the qualifiers that matter.
+struct CastTy {
+    std::string type;
+    int ptr = 0;
+    bool isUnsigned = false;
+    bool isConst = false;
+};
+
+static CastTy* makeCastType(DeclSpec* sp, int stars) {
+    CastTy* c = new CastTy();
+    c->type = sp->type;
+    c->ptr = stars;
+    c->isUnsigned = sp->isUnsigned;
+    c->isConst = sp->isConst;
+    return c;
+}
+
+// (T) e. Pointers and int-sized integers are only relabelled; a conversion to char / short is a
+// sign extension (zero extension for the unsigned types), and to bool a comparison with zero.
+// Constants are converted at compile time.
+static Operand* castOp(CastTy* ct, Operand* e) {
+    Type T = typeFromName(ct->type, ct->ptr, 0, ct->isConst);
+    use(e);
+    if (isAggrVal(T)) {
+        semError("cannot cast to the struct / class type '" + typeName(T) + "'");
+        return e;
+    }
+    if (known(e->ty) && isAggrVal(e->ty)) {
+        semError("cannot cast a struct / class value to '" + typeName(T) + "'");
+        return e;
+    }
+    std::string v = rval(e);
+    if (isVoidT(T)) return typedOp("", T);                 // (void) x: evaluated, value discarded
+    int bits = 0;
+    bool toBool = false;
+    if (T.ptr == 0 && !T.aggr) {
+        if (T.base == "char") bits = 8;
+        else if (T.base == "short") bits = 16;
+        else if (T.base == "bool") toBool = true;
+    }
+    if (bits == 0 && !toBool) return typedOp(v, T);
+    long lit;
+    bool isLit = parseConstInt(v, lit);
+    std::string out;
+    if (toBool) {
+        if (isLit) out = lit != 0 ? "1" : "0";
+        else {
+            out = tacGen.newTemp(makeType("int"));
+            tacGen.emit("!=", v, "0", out);
+        }
+    } else if (ct->isUnsigned) {
+        long mask = (1L << bits) - 1;
+        if (isLit) out = numstr(lit & mask);
+        else {
+            out = tacGen.newTemp(makeType("int"));
+            tacGen.emit("&", v, numstr(mask), out);
+        }
+    } else {
+        if (isLit) {
+            long m = (1L << bits) - 1;
+            long x = lit & m;
+            if (x >= (1L << (bits - 1))) x -= (1L << bits);
+            out = numstr(x);
+        } else {
+            std::string up = tacGen.newTemp(makeType("int"));
+            out = tacGen.newTemp(makeType("int"));
+            tacGen.emit("<<", v, numstr(32 - bits), up);
+            tacGen.emit(">>", up, numstr(32 - bits), out);
+        }
+    }
+    return typedOp(out, T);
+}
+
 // sizeof expr: the operand is not evaluated, so its size comes from its type alone.
 static long sizeOfOperand(Operand* o) {
     if (!known(o->ty)) return 4;
@@ -1780,6 +1872,8 @@ static void resetState() {
     aggrMemberTypes.clear();
     memberAccess.clear();
     enumTags.clear();
+    typeNames.clear();
+    anonCount = 0;
     spec_stack.clear();
     defaultSpec = DeclSpec();
     switch_stack.clear();
@@ -1817,6 +1911,7 @@ static void resetState() {
     ParamList* params;
     InitNode* init;
     Ctx* ctx;
+    CastTy* cast;
     int flag;
 }
 
@@ -1828,7 +1923,7 @@ static void resetState() {
 %token KW_SHORT KW_SIGNED KW_SIZEOF KW_STATIC KW_STRUCT KW_SWITCH KW_THIS
 %token KW_TRUE KW_TYPEDEF KW_UNION KW_UNSIGNED KW_VOID KW_VOLATILE KW_WHILE
 
-%token <str> IDENTIFIER
+%token <str> IDENTIFIER TYPE_NAME      /* TYPE_NAME: the name of a struct, class, union or enum (see typeNames) */
 %token <str> INTEGER_LITERAL HEX_LITERAL FLOAT_LITERAL CHAR_LITERAL STRING_LITERAL
 
 %token PLUS MINUS STAR SLASH PERCENT
@@ -1870,7 +1965,7 @@ static void resetState() {
 %type <decl> declarator direct_declarator
 %type <init> initializer initializer_list
 %type <spec> declaration_specifiers decl_head
-%type <str> type_specifier storage_class type_qualifier assignment_operator string_literal
+%type <str> type_specifier storage_class type_qualifier assignment_operator string_literal tag_name anon_aggr_head
 %type <flag> pointer_opt access_specifier new_stars
 %type <param> parameter_declaration
 %type <params> parameter_list parameter_list_opt
@@ -1878,7 +1973,8 @@ static void resetState() {
 %type <op> logical_or_expression logical_and_expression
 %type <op> bitwise_or_expression bitwise_xor_expression bitwise_and_expression
 %type <op> equality_expression relational_expression shift_expression
-%type <op> additive_expression multiplicative_expression
+%type <op> additive_expression multiplicative_expression cast_expression
+%type <cast> cast_type
 %type <op> unary_expression postfix_expression primary_expression
 
 %start program
@@ -1910,19 +2006,27 @@ external_declaration
    ============================================================ */
 
 class_definition
-    : KW_CLASS IDENTIFIER { beginAggr($2, true); } LEFT_BRACE class_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
+    : KW_CLASS tag_name { beginAggr($2, true); } LEFT_BRACE class_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
     ;
 
 struct_definition
-    : KW_STRUCT IDENTIFIER { beginAggr($2, false); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
+    : KW_STRUCT tag_name { beginAggr($2, false); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
     ;
 
 union_definition
-    : KW_UNION IDENTIFIER { beginAggr($2, false, true); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
+    : KW_UNION tag_name { beginAggr($2, false, true); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
     ;
 
 enum_definition
-    : KW_ENUM IDENTIFIER { enumTags.insert($2); enum_next = 0; enum_next_known = true; } LEFT_BRACE enumerator_list RIGHT_BRACE SEMICOLON
+    : KW_ENUM tag_name { enumTags.insert($2); typeNames.insert($2); enum_next = 0; enum_next_known = true; }
+      LEFT_BRACE enumerator_list comma_opt RIGHT_BRACE SEMICOLON
+    | KW_ENUM { enum_next = 0; enum_next_known = true; } LEFT_BRACE enumerator_list comma_opt RIGHT_BRACE SEMICOLON
+    ;
+
+/* the name after struct / class / union / enum: a new name, or one that is already a type name */
+tag_name
+    : IDENTIFIER    { $$ = $1; }
+    | TYPE_NAME     { $$ = $1; }
     ;
 
 enumerator_list
@@ -1986,10 +2090,10 @@ declaration
     ;
 
 declaration_specifiers
-    : type_specifier                          { $$ = new DeclSpec(); $$->type = $1; }
+    : type_specifier                          { $$ = new DeclSpec(); $$->type = $1; if (!strcmp($1, "unsigned")) $$->isUnsigned = true; }
     | type_qualifier                          { $$ = new DeclSpec(); if (!strcmp($1, "const")) $$->isConst = true; }
     | storage_class                           { $$ = new DeclSpec(); applyStorage($$, $1); }
-    | declaration_specifiers type_specifier   { $$ = $1; $$->type = $2; }
+    | declaration_specifiers type_specifier   { $$ = $1; if (!strcmp($2, "unsigned")) $$->isUnsigned = true; else $$->type = $2; }
     | declaration_specifiers type_qualifier   { $$ = $1; if (!strcmp($2, "const")) $$->isConst = true; }
     | declaration_specifiers storage_class    { $$ = $1; applyStorage($$, $2); }
     ;
@@ -2020,10 +2124,18 @@ type_specifier
     | KW_SIGNED             { $$ = strdup("signed"); }
     | KW_UNSIGNED           { $$ = strdup("unsigned"); }
     | KW_BOOL               { $$ = strdup("bool"); }
-    | KW_STRUCT IDENTIFIER  { $$ = $2; }
-    | KW_CLASS IDENTIFIER   { $$ = $2; }
-    | KW_UNION IDENTIFIER   { $$ = $2; }
-    | KW_ENUM IDENTIFIER    { $$ = $2; }
+    | KW_STRUCT tag_name    { typeNames.insert($2); $$ = $2; }     /* "class B;" and "struct B *p;" before B is defined */
+    | KW_CLASS tag_name     { typeNames.insert($2); $$ = $2; }
+    | KW_UNION tag_name     { typeNames.insert($2); $$ = $2; }
+    | KW_ENUM tag_name      { typeNames.insert($2); $$ = $2; }
+    | TYPE_NAME             { $$ = $1; }
+    | anon_aggr_head LEFT_BRACE struct_member_list_opt RIGHT_BRACE { endAggr(); $$ = $1; }
+    ;
+
+/* struct { ... } name;   union { ... } name;   (the type gets a generated name) */
+anon_aggr_head
+    : KW_STRUCT     { $$ = anonAggr(false); }
+    | KW_UNION      { $$ = anonAggr(true); }
     ;
 
 init_declarator_list_opt
@@ -2437,29 +2549,42 @@ additive_expression
     ;
 
 multiplicative_expression
+    : cast_expression { $$ = $1; }
+    | multiplicative_expression STAR cast_expression { $$ = binop("*", $1, $3); }
+    | multiplicative_expression SLASH cast_expression { $$ = binop("/", $1, $3); }
+    | multiplicative_expression PERCENT cast_expression { $$ = binop("%", $1, $3); }
+    ;
+
+/* (type) expression */
+cast_expression
     : unary_expression { $$ = $1; }
-    | multiplicative_expression STAR unary_expression { $$ = binop("*", $1, $3); }
-    | multiplicative_expression SLASH unary_expression { $$ = binop("/", $1, $3); }
-    | multiplicative_expression PERCENT unary_expression { $$ = binop("%", $1, $3); }
+    | LEFT_PAREN cast_type RIGHT_PAREN cast_expression { $$ = castOp($2, $4); }
+    ;
+
+/* a type written in a cast or in sizeof: const char *, unsigned int, struct Node *, Point */
+cast_type
+    : declaration_specifiers            { $$ = makeCastType($1, 0); }
+    | declaration_specifiers new_stars  { $$ = makeCastType($1, $2); }
     ;
 
 unary_expression
     : postfix_expression { $$ = $1; }
     | INCREMENT unary_expression { $$ = preIncDec($2, "+"); }
     | DECREMENT unary_expression { $$ = preIncDec($2, "-"); }
-    | BITWISE_AND unary_expression { $$ = addrOp($2); }
-    | STAR unary_expression { $$ = derefOp($2); }
-    | PLUS unary_expression { $$ = unaryPlus($2); }
-    | MINUS unary_expression { $$ = negate($2); }
-    | BITWISE_NOT unary_expression { $$ = bitNot($2); }
-    | LOGICAL_NOT unary_expression { $$ = logNot($2); }
+    | BITWISE_AND cast_expression { $$ = addrOp($2); }
+    | STAR cast_expression { $$ = derefOp($2); }
+    | PLUS cast_expression { $$ = unaryPlus($2); }
+    | MINUS cast_expression { $$ = negate($2); }
+    | BITWISE_NOT cast_expression { $$ = bitNot($2); }
+    | LOGICAL_NOT cast_expression { $$ = logNot($2); }
     | KW_SIZEOF unary_expression {
         // sizeof does not evaluate its operand: the size is a compile-time constant
         use($2);
         $$ = typedOp(numstr(sizeOfOperand($2)), makeType("int"));
     }
-    | KW_SIZEOF LEFT_PAREN type_specifier pointer_opt RIGHT_PAREN {
-        long n = ($4 >> 1) > 0 ? 4 : finalLayouts.baseSize(typeFromName($3, 0, 0, false));
+    | KW_SIZEOF LEFT_PAREN cast_type RIGHT_PAREN {
+        Type t = typeFromName($3->type, $3->ptr, 0, false);
+        long n = t.ptr > 0 ? 4 : finalLayouts.baseSize(t);
         $$ = typedOp(numstr(n), makeType("int"));
     }
     | KW_NEW type_specifier %prec NEW_TYPE {
@@ -2563,6 +2688,7 @@ void yyerror(const char* s) {
 // Read the whole program once; the layouts, the symbol tables and the IR are rebuilt from scratch.
 static int runPass(FILE* input) {
     resetState();
+    lexer_reset_macros();
     rewind(input);
     yyrestart(input);
     yylineno = 1;
@@ -2641,6 +2767,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    type_name_hook = isTypeNameHook;
     int res = compileFile(file);
 
     if (res == 0 && !has_error) {

@@ -11,6 +11,7 @@
 # Layout of tests/ (default run):
 #   tests/parser/*.c                       syntax tests; a name containing "_invalid" must be rejected
 #   tests/semantic/*.c                     must compile (IR is generated but not compared)
+#   tests/errors/err_*.c                   must be rejected; the diagnostics must contain the "// EXPECT:" text
 #   tests/ir/*.c                           the IR and the layout / symbol tables (--tables) must equal
 #                                          tests/ir/expected/<name>.tac
 #   tests/codegen/*.c                      compiled to MIPS (-S), run on SPIM (stdin from <name>.in if it exists);
@@ -259,6 +260,22 @@ for f in "$TESTS"/ir/*.c; do
     else
         fail "$name (IR differs from expected)"; show "$TMP.diff" 20
     fi
+done
+
+# ---- 6b. programs that must be rejected: access control and common mistakes ----
+# The first line holds "// EXPECT: <text>"; the compiler must fail and its diagnostics must contain the text.
+group "Rejected programs ($TESTS/errors)"
+for f in "$TESTS"/errors/*.c; do
+    [ -e "$f" ] || continue
+    total=$((total + 1))
+    name=$(basename "$f" .c)
+    want=$(head -1 "$f" | tr -d '' | sed -n 's#^// EXPECT: *##p')
+    compile "$f" "$TMP.tac" "$TMP.err"
+    status=$?
+    if [ -z "$want" ]; then fail "$name (missing '// EXPECT:' header)"
+    elif [ $status -eq 0 ]; then fail "$name (invalid program was accepted)"
+    elif grep -qF -- "$want" "$TMP.err"; then pass "$name"
+    else fail "$name (wrong message, wanted: $want)"; show "$TMP.err"; fi
 done
 
 # ---- 7. end-to-end tests: compile to MIPS, run on SPIM, compare the output with <name>.expected ----

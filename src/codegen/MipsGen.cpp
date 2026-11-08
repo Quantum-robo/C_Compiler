@@ -654,9 +654,18 @@ bool Gen::generate() {
         text << "    .globl main\nmain:\n";
         ins("addiu $sp, $sp, -4");
         ins("sw $ra, 0($sp)");
+        ins("move $s0, $a0");                           // SPIM passes argc in $a0 and argv in $a1
+        ins("move $s1, $a1");
         ins("jal __global_init");
         if (!externs.empty()) ins("jal R__global_init");
+        size_t mainParams = userFuncs.count("main") ? byName["main"]->params.size() : 0;
+        if (mainParams >= 1) {                          // main(int argc [, char **argv])
+            ins("addiu $sp, $sp, -8");
+            ins("sw $s1, 4($sp)");
+            ins("sw $s0, 0($sp)");
+        }
         ins("jal F_main");
+        if (mainParams >= 1) ins("addiu $sp, $sp, 8");
         ins("move $a0, $v0");
         ins("li $v0, 17");
         ins("syscall");

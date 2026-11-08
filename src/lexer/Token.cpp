@@ -5,6 +5,10 @@
 // file while it reads the program a first time to collect class layouts.
 FILE* diag_out = stderr;
 
+// Asked by the lexer for every identifier: is it the name of a struct / class / union / enum? The parser
+// installs the real function; the standalone lexer leaves it null and sees only plain identifiers.
+bool (*type_name_hook)(const char*) = nullptr;
+
 const char* tokenTypeToString(TokenType type)
 {
     switch (type)

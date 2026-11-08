@@ -5,19 +5,27 @@ The overview and the test suite are described in the [README](../README.md).
 
 ## 1. Rules and limitations
 
-The compiler accepts a C-like subset. A few things that are legal in C or C++ are not supported; each row shows what to write instead.
+The compiler accepts a C-like subset (C with classes, references and `new` / `delete`). These things are legal in C or
+C++ but are **not supported**; each row shows what to write instead.
 
 | Not supported                                   | Example that fails                          | Write this instead                                  |
 | ----------------------------------------------- | ------------------------------------------- | --------------------------------------------------- |
-| A bare struct/class/union/enum name as a type   | `Box b1;`, `P p;`                           | `class Box b1;`, `struct P p;`, `enum Color c;`     |
-| `typedef` names as types                        | `typedef int myint; myint a;`               | use the underlying type directly                    |
-| Anonymous enums                                 | `enum { A, B };`                            | give the enum a name: `enum E { A, B };`            |
-| Casts                                           | `(int)3.5`                                  | assign to a variable of the target type             |
-| Inheritance, templates, operator overloading    | `class B : public A { };`                   | write the classes independently                     |
+| Constructors and destructors                    | `class A { A() { } };`, `A a(5);`           | an `init(...)` method called after the declaration  |
+| Inheritance, virtual functions, templates, operator overloading | `class B : public A { };`   | write the classes independently                     |
+| `typedef`                                       | `typedef int myint;`                        | use the underlying type (a `#define` works for a name) |
+| Function-like macros                            | `#define MAX(a, b) ...`                     | write a function                                    |
+| Floating point (`float`, `double`)              | `float f = 1.5;`                            | not yet supported by the code generator (see MIPS.md) |
+| Unsigned arithmetic                             | `unsigned int u;` is accepted but signed    | use `int`; `(unsigned char)` / `(unsigned short)` casts do mask |
+| Pointers to arrays                              | `int (*row)[3] = grid;`                     | `int *row = grid[1];` or index the array            |
+| `cond ? a : b` as an lvalue                     | `return c ? x : y;` in a function returning `int &` | use `if` / `else`                            |
 | Enumerator values that are not plain literals   | `enum E { A = 1 << 3 };`                    | `A = 8` (otherwise a warning, names stay in the IR) |
+| `sscanf`, `fprintf`, `fopen`, math functions     | `sqrt(2)`                                   | not provided by the runtime library                 |
 
-A bare type name fails with `SYNTAX ERROR` at the variable name, and every later use of the variable then also reports
-`'x' was not declared in this scope`. Fix the first error and the rest disappear.
+Also accepted since they are common: `class B;` forward declarations, anonymous `struct { } name;` / `union { } name;`
+members and anonymous `enum { A, B };`, casts `(int*)malloc(n)`, `(char)x`, `(bool)n`, and object-like macros
+(`#define SIZE 10`, expanded wherever the name appears; `#include` and conditional-compilation lines are ignored).
+A struct, class, union or enum name can be used as a type without the keyword (`Counter c;`, `Node *n;`), and a variable
+may even share its name with a type (`struct node *node;`).
 
 Other rules:
 

@@ -3,13 +3,44 @@
 #include <string.h> // For strdup
 #include "Token.hpp"
 #include "parser.tab.h" // Hooking up Bison's tokens
+#include <map>
+#include <string>
+#include <cctype>
 extern int has_error;
-extern FILE* diag_out;     // where diagnostics go (stderr; muted during the layout pass)
+extern FILE* diag_out;
+extern bool (*type_name_hook)(const char*);   // set by the parser; null in the standalone lexer
 
 std::vector<LexedToken> lexed_tokens;
 
+// Has a type just been written? ("struct node", "Counter", "int", ...) A name that follows it, directly or after
+// '*' / '&', is the declared variable even if it is also a type name:  struct node *node;   Counter Counter;
+static bool afterType = false;
+static int previousToken = 0;
+
+static void trackTypeContext(int tok)
+{
+    bool tagPosition = previousToken == KW_STRUCT || previousToken == KW_CLASS ||
+                       previousToken == KW_UNION || previousToken == KW_ENUM;
+    switch (tok) {
+        case TYPE_NAME: case KW_STRUCT: case KW_CLASS: case KW_UNION: case KW_ENUM:
+        case KW_VOID: case KW_CHAR: case KW_SHORT: case KW_INT: case KW_LONG: case KW_FLOAT:
+        case KW_DOUBLE: case KW_SIGNED: case KW_UNSIGNED: case KW_BOOL:
+            afterType = true;
+            break;
+        case IDENTIFIER:
+            afterType = tagPosition;                  // the name of a struct: the type is complete
+            break;
+        case STAR: case BITWISE_AND: case KW_CONST:
+            break;                                    // still inside the type
+        default:
+            afterType = false;
+    }
+    previousToken = tok;
+}
+
 int processToken(TokenType type, int bison_token)
 {
+    trackTypeContext(bison_token);
     lexed_tokens.push_back({
         yytext,
         tokenTypeToString(type)
@@ -23,6 +54,53 @@ int processToken(TokenType type, int bison_token)
 
 int colno = 1;
 int current_col = 1;
+
+// Object-like macros:  #define NAME replacement text   (forgotten again by #undef NAME).
+// An identifier that names a macro is replaced by the text, which is then scanned again.
+// Function-like macros (#define F(x) ...) are not supported; conditional-compilation lines are ignored.
+static std::map<std::string, std::string> macros;
+static int macroExpansions = 0;
+static bool expand_macro(const char* name);     // defined after the rules, where unput() exists
+
+void lexer_reset_macros()
+{
+    macros.clear();
+    macroExpansions = 0;
+    afterType = false;
+    previousToken = 0;
+}
+
+static std::string trim(const std::string& s)
+{
+    size_t b = s.find_first_not_of(" \t\r");
+    if (b == std::string::npos) return "";
+    size_t e = s.find_last_not_of(" \t\r");
+    return s.substr(b, e - b + 1);
+}
+
+// A preprocessor line: only "#define NAME text" and "#undef NAME" have an effect.
+static void directive(const std::string& line)
+{
+    size_t i = 1;                                        // after '#'
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    size_t w = i;
+    while (i < line.size() && isalpha((unsigned char)line[i])) ++i;
+    std::string word = line.substr(w, i - w);
+    if (word != "define" && word != "undef") return;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    size_t n = i;
+    while (i < line.size() && (isalnum((unsigned char)line[i]) || line[i] == '_')) ++i;
+    std::string name = line.substr(n, i - n);
+    if (name.empty()) return;
+    if (word == "undef") { macros.erase(name); return; }
+    if (i < line.size() && line[i] == '(') return;       // a function-like macro: not supported
+    std::string text = line.substr(i);
+    size_t c = text.find("//");                          // a trailing comment is not part of the text
+    if (c != std::string::npos) text = text.substr(0, c);
+    c = text.find("/*");
+    if (c != std::string::npos) text = text.substr(0, c);
+    macros[name] = trim(text);
+}
 
 
 #define YY_USER_ACTION \
@@ -42,7 +120,7 @@ int current_col = 1;
 %%
 
     /* PREPROCESSOR DIRECTIVES */
-"#"[^\n]*                               { /* ignore preprocessor directives */ }
+"#"[^\n]*                               { directive(yytext); }
 
     /* COMMENTS */
 
@@ -149,7 +227,14 @@ int current_col = 1;
 
 
     /*  IDENTIFIERS  */
-[a-zA-Z_][a-zA-Z0-9_]* { return processToken(TokenType::Identifier, IDENTIFIER); }
+[a-zA-Z_][a-zA-Z0-9_]* {
+    if (!expand_macro(yytext)) {
+        /* the parser says which names are struct / class / union / enum names, so that "Point p;" is a declaration */
+        if (!afterType && type_name_hook && type_name_hook(yytext)) return processToken(TokenType::Identifier, TYPE_NAME);
+        return processToken(TokenType::Identifier, IDENTIFIER);
+    }
+    /* a macro: its text was pushed back and is scanned next */
+}
 
 
     /*  MULTI-CHARACTER OPERATORS  */
@@ -244,3 +329,20 @@ int current_col = 1;
 }
 
 %%
+/* Replace the identifier just read by its macro text: the text is pushed back (last character first) so
+   that the scanner reads it next. Returns false if 'name' is not a macro, or if its text mentions the name
+   itself (the expansion would never end). */
+static bool expand_macro(const char* identifier)
+{
+    if (macros.empty()) return false;
+    std::string name = identifier;
+    std::map<std::string, std::string>::iterator m = macros.find(name);
+    if (m == macros.end()) return false;
+    if (macroExpansions >= 100000 || m->second.find(name) != std::string::npos) return false;
+    std::string text = m->second;
+    ++macroExpansions;
+    unput(' ');
+    for (size_t k = text.size(); k-- > 0;) unput(text[k]);
+    unput(' ');
+    return true;
+}
