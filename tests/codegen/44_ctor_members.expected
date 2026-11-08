@@ -1,0 +1,38 @@
+-- w1
+Part()
+Part(7)
+Whole() n=3
+-- w2
+Part(10)
+Part(11)
+Whole(10)
+-- holder
+Part()
+Part()
+-- outer
+Part()
+Part()
+Part()
+outer built
+~Part(99)
+~Part(-1)
+~Part(-1)
+-- heap
+Part(20)
+Part(21)
+Whole(20)
+~Whole(20)
+~Part(21)
+~Part(20)
+1001 1052
+7
+7
+-- end
+~Part(-1)
+~Part(-1)
+~Whole(10)
+~Part(11)
+~Part(10)
+~Whole(3)
+~Part(7)
+~Part(-1)

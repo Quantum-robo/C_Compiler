@@ -47,6 +47,7 @@ public:
     void finalize();
 
     const AggrLayout* find(const std::string& cls) const;
+    const std::vector<std::string>& classNames() const { return order; }   // in definition order
     const FieldInfo* field(const std::string& cls, const std::string& name) const;
 
     // Size / alignment of one element of the base type (pointer and array levels ignored).

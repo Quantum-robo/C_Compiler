@@ -374,7 +374,8 @@ void Gen::beginFunction(const FuncInfo& f, bool hidden) {
     long frame = roundUp(cur, 8);
 
     text << "\n";
-    label(f.name == "_global_init" ? pfx + "__global_init" : funcLabel(f.name));
+    label(f.name == "_global_init" ? pfx + "__global_init" :
+          f.name == "_global_fini" ? pfx + "__global_fini" : funcLabel(f.name));
     ins("addiu $sp, $sp, -8");
     ins("sw $ra, 4($sp)");
     ins("sw $fp, 0($sp)");
@@ -666,13 +667,17 @@ bool Gen::generate() {
         }
         ins("jal F_main");
         if (mainParams >= 1) ins("addiu $sp, $sp, 8");
-        ins("move $a0, $v0");
+        ins("move $s2, $v0");                           // main's result is the exit code, after the global destructors run
+        ins("jal __global_fini");
+        ins("move $a0, $s2");
         ins("li $v0, 17");
         ins("syscall");
     }
 
     size_t pos = 0;
     genFunction(tac.initInfo(), tac.initCode(), pos, true);
+    pos = 0;
+    genFunction(tac.finiInfo(), tac.finiCode(), pos, true);
 
     const std::vector<TACInstruction>& code = tac.code();
     pos = 0;

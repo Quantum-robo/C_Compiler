@@ -10,7 +10,7 @@ C++ but are **not supported**; each row shows what to write instead.
 
 | Not supported                                   | Example that fails                          | Write this instead                                  |
 | ----------------------------------------------- | ------------------------------------------- | --------------------------------------------------- |
-| Constructors and destructors                    | `class A { A() { } };`, `A a(5);`           | an `init(...)` method called after the declaration  |
+| Temporary objects `Counter(5)`, copy constructors for by-value copies | `f(Counter(5))`  | declare a named object (a by-value copy copies the bytes) |
 | Inheritance, virtual functions, templates, operator overloading | `class B : public A { };`   | write the classes independently                     |
 | `typedef`                                       | `typedef int myint;`                        | use the underlying type (a `#define` works for a name) |
 | Function-like macros                            | `#define MAX(a, b) ...`                     | write a function                                    |
@@ -38,6 +38,34 @@ Other rules:
 * **Array sizes are constants.** `int a[10]`, `int a[N]` with an enumerator `N`, and `const int N = 10; int a[N];` are accepted; a size that depends on a run-time value is an error. The first size may be left out when there is an initializer (`int a[] = {1, 2, 3};`).
 * **Variables get unique IR names.** A second `i` in a sibling block becomes `i.2`, and a local that shadows a global is renamed (`x.1`); the IR therefore never needs scope information (see [IR.md](IR.md)).
 * **Sizes.** `char` is 1 byte, `short` 2, `int`, `long`, `float` and pointers 4, `double` 8. Struct members are aligned to their own size, and `sizeof` is evaluated by the compiler.
+
+## 1b. Constructors and destructors
+
+```c
+class Account {
+public:
+    int balance;
+    Account(int start) : balance(start) { }          // constructor with an initializer list
+    Account() { balance = 0; }                        // overloaded by the number of parameters
+    ~Account() { printf("closing %d\n", balance); }  // destructor
+};
+Account a(100);        // constructor with arguments        Account b;   // default constructor
+Account *p = new Account(5);     delete p;     Account list[3];     // every element gets the default constructor
+```
+
+* **When constructors run:** at the declaration of a local, global or static object (a global one from `_global_init`),
+  for every element of an array of objects, and for `new T`, `new T(args)` and `new T[n]`. A constructor is chosen by
+  its **number of arguments**; two constructors with the same number of parameters are an error.
+* **Members:** members that are objects are constructed first, in declaration order, using the arguments of the
+  initializer list (`: a(1), b(2)`) or their default constructor, then the body runs. A class whose members need
+  construction but which has no constructor gets an implicit default one (likewise for the destructor).
+* **When destructors run:** at the end of the scope of a local object, in reverse order of declaration, also when the
+  scope is left by `return`, `break` or `continue`; for global objects after `main` returns (last constructed first);
+  for `delete` and `delete[]`; and for the members of an object after its own destructor body.
+* **Not supported:** `goto` out of a scope does not run destructors; temporary objects (`Counter(5)` as an expression);
+  copy constructors are never called implicitly (a by-value copy copies the bytes, and a by-value parameter is
+  destroyed when the function returns); a returned local object is moved out like a C++ return-value optimisation;
+  static locals are constructed at program start, not at the first call; constructors defined outside the class body.
 
 ## 2. Enums
 

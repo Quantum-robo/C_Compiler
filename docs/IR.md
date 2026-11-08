@@ -92,6 +92,9 @@ An empty struct has size 1. Methods take no space. `src/semantic/Layout.{hpp,cpp
   temporary is one word.
 * **`initInfo()` / `initCode()`** - the temporaries and instructions of `_global_init`: the initializers of globals
   and static locals. The program must run it once before `main`.
+* **`finiInfo()` / `finiCode()`** - `_global_fini`: the destructors of global objects, to run after `main`.
+* **Constructors and destructors** are ordinary methods named `Class::Class#N` (N = number of parameters) and
+  `Class::~Class`; the parser inserts the calls (at declarations, at the end of scopes, in `new` / `delete`).
 
 Every local has an IR name that is unique inside its function: a second variable called `i` becomes `i.2`, and a
 local that shadows a global is renamed too (`x.1`). A static local is `function.name`. The code generator therefore

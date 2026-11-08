@@ -185,8 +185,8 @@ make                # builds the lexer and parser
 | `archived_tests/25_OCT/semantic_valid/` | 22    | Tricky and realistic valid programs: accepted, with no diagnostics at all.                            |
 | `tests/semantic/`                   | 14    | Must compile (also used by `make test-semantic` and `make ir`).                                       |
 | `tests/ir/`                         | 5     | The IR and the layout / symbol tables (`--tables`) must equal `tests/ir/expected/<name>.tac`.         |
-| `tests/errors/`                     | 14    | Must be rejected (access control, undeclared names, ...); diagnostics must contain the `// EXPECT:` text. |
-| `tests/codegen/`                    | 42    | Compiled to MIPS, run on SPIM; the output must equal `<name>.expected` (skipped if `spim` is missing). |
+| `tests/errors/`                     | 18    | Must be rejected (access control, undeclared names, ...); diagnostics must contain the `// EXPECT:` text. |
+| `tests/codegen/`                    | 45    | Compiled to MIPS, run on SPIM; the output must equal `<name>.expected` (skipped if `spim` is missing). |
 
 `tests/lexer/` holds inputs for the standalone lexer (`make test-lexer`).
 
@@ -194,14 +194,14 @@ If the IR changes on purpose, review it and re-bless the expected files with `./
 
 If the executable cannot be launched at all (for example because Windows is blocking a freshly built `.exe`), `run.sh` stops with a clear message and exit status 2 instead of failing every test.
 
-A successful run of `make check` (80 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
+A successful run of `make check` (87 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
 
 ```text
 ==============================
 Test Summary
 ==============================
-Total:  80
-Passed: 80
+Total:  87
+Passed: 87
 Failed: 0
 
 All tests passed!

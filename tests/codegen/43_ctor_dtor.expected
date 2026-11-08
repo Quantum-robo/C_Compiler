@@ -1,0 +1,47 @@
+ctor 100
+ctor default
+main start
+ctor 1
+ctor 2
+ctor default
+inner
+dtor 0
+dtor 2
+after inner
+ctor default
+ctor default
+end of function
+dtor 8
+dtor 7
+dtor 1
+ctor 11
+dtor 11
+early: 1
+ctor 10
+ctor 20
+dtor 20
+dtor 10
+early: 0
+ctor 30
+dtor 30
+ctor 31
+loop body end
+dtor 31
+ctor 40
+dtor 40
+ctor 41
+dtor 41
+ctor 60
+dtor 60
+ctor 50
+ctor default
+p=50 q=0
+dtor 50
+ctor default
+ctor default
+dtor 9
+dtor 0
+dtor 0
+main end
+dtor 0
+dtor 100

@@ -7,6 +7,7 @@
     struct InitNode;
     struct Ctx;
     struct CastTy;
+    struct ArgVec;
 }
 
 %{
@@ -110,6 +111,8 @@ struct ParamList {
 
 struct Declarator {
     std::string name;
+    std::vector<Operand*> ctorArgs;    // Counter c(1, 2);  the arguments of the constructor
+    bool hasCtorArgs = false;
     std::vector<std::string> dims;
     bool isFunc = false;
     bool isFuncPtr = false;            // int (*fp)(int)
@@ -168,8 +171,41 @@ struct FuncSig {
 
 static std::vector<std::map<std::string, Symbol> > scopes(1);
 
-static void pushScope() { scopes.push_back(std::map<std::string, Symbol>()); }
-static void popScope() { if (scopes.size() > 1) scopes.pop_back(); }
+// An object whose destructor must run when its scope ends (count > 0: an array of that many objects).
+struct CleanupItem {
+    std::string var, cls;
+    long count = 0;
+};
+struct GlobalObject { CleanupItem item; };                       // a global / static object with a destructor
+struct InitEntry {                                               // member(args) in a constructor's initializer list
+    std::string member;
+    std::vector<Operand*> args;
+};
+struct ArgVec { std::vector<Operand*> items; };                  // constructor arguments in a declaration or new
+
+static std::vector<std::vector<CleanupItem> > cleanups(1);       // one list per open scope, parallel to 'scopes'
+static std::vector<GlobalObject> globalObjects;
+static std::vector<InitEntry> curInitList;
+static std::map<std::string, std::set<int> > ctorArities, finalCtorArities;   // constructor arities of each class
+static std::set<std::string> dtorClasses, finalDtorClasses;
+static std::set<std::string> needCtor, needDtor;                 // classes that need construction / destruction
+static std::map<std::string, FuncSig> finalFuncSigs;             // funcSigs at the end of the first pass
+static bool cur_is_dtor = false;
+static size_t fn_scope_base = 0;                                 // index in 'scopes' of the function's parameter scope
+static void emitScopeCleanup(size_t frame);                      // defined with the constructor / destructor helpers
+static void synthesizeSpecials(const std::string& cls);
+
+static void pushScope() {
+    scopes.push_back(std::map<std::string, Symbol>());
+    cleanups.push_back(std::vector<CleanupItem>());
+}
+// Closing a scope runs the destructors of the objects declared in it.
+static void popScope(bool emit = true) {
+    if (scopes.size() <= 1) return;
+    if (emit) emitScopeCleanup(scopes.size() - 1);
+    scopes.pop_back();
+    cleanups.pop_back();
+}
 
 static void declareSym(const std::string& name, const Symbol& s) {
     std::map<std::string, Symbol>& sc = scopes.back();
@@ -237,6 +273,7 @@ static std::vector<SwitchCtx> switch_stack;
 // Control-flow label stacks (loops use loop_stack, defined with the loop helpers)
 std::stack<std::string> label_stack;                // pending labels of if/else
 std::stack<std::string> break_stack;
+std::stack<size_t> break_depth, continue_depth;      // number of open scopes when the loop / switch began
 std::stack<std::string> continue_stack;
 struct CallFrame {
     std::string callee;                // IR name of the function being called ("" if unknown)
@@ -331,6 +368,7 @@ static char* anonAggr(bool isUnion) {
 // Names used inside method bodies that were not yet known when the body was
 // parsed (members declared later in the class) must exist by the end of the class.
 static void endAggr() {
+    synthesizeSpecials(cur_aggr);
     std::set<std::string> reported;
     for (size_t i = 0; i < pendingNames.size();) {
         if (pendingNames[i].cls == cur_aggr) {
@@ -1141,6 +1179,253 @@ static Type commonType(Operand* a, Operand* b) {
 }
 
 /* ------------------------------------------------------------------
+   Constructors and destructors
+
+   A constructor is the method Class::Class#N (N = number of parameters, so a class can have one per arity), the
+   destructor is Class::~Class. They are called:
+     - at the declaration of an object (also an array: every element), a global one from _global_init;
+     - by new / new[];
+   and a destructor runs
+     - when the scope of a local object ends, also on return / break / continue that leave it, in reverse order;
+     - for global objects after main (_global_fini); by delete / delete[].
+   Members that are objects are constructed before the body of the constructor (in declaration order, with the
+   arguments of the initializer list) and destroyed after the body of the destructor. A class that needs a
+   constructor only because of its members gets an implicit default one.
+   Not covered: goto out of a scope (no destructor call), user copy constructors for by-value copies (the bytes
+   are copied), static locals (constructed at program start, not at the first call).
+   ------------------------------------------------------------------ */
+
+static std::string ctorName(const std::string& cls, size_t arity) { return cls + "::" + cls + "#" + std::to_string(arity); }
+static std::string dtorName(const std::string& cls) { return cls + "::~" + cls; }
+static bool needsCtor(const std::string& cls) { return needCtor.count(cls) > 0; }
+static bool needsDtor(const std::string& cls) { return needDtor.count(cls) > 0; }
+
+// The class of an object type (a struct / class / union value, not a pointer), or "".
+static std::string objectClass(const Type& t) { return (known(t) && t.aggr && t.ptr == 0) ? t.base : std::string(); }
+
+static const FuncSig* findSig(const std::string& name) {
+    std::map<std::string, FuncSig>::iterator it = funcSigs.find(name);
+    if (it != funcSigs.end()) return &it->second;
+    it = finalFuncSigs.find(name);
+    return it == finalFuncSigs.end() ? nullptr : &it->second;
+}
+
+static long objectSize(const std::string& cls) {
+    const AggrLayout* al = finalLayouts.find(cls);
+    return al ? al->size : 1;
+}
+
+static long arrayCount(const std::vector<long>& dims) {
+    if (dims.empty()) return 0;
+    long n = 1;
+    for (size_t i = 0; i < dims.size(); ++i) n *= dims[i];
+    return n;
+}
+
+// Call the constructor of 'cls' (chosen by the number of arguments) for the object at address 'addr'.
+static void emitCtorCall(const std::string& cls, const std::string& addr, const std::vector<Operand*>& args) {
+    const FuncSig* sig = findSig(ctorName(cls, args.size()));
+    if (!sig) {
+        semError("no matching constructor for '" + cls + "' with " + std::to_string(args.size()) + " argument(s)");
+        return;
+    }
+    std::vector<std::string> vals;
+    for (size_t i = 0; i < args.size() && i < sig->params.size(); ++i) {
+        Operand* o = args[i];
+        const Param& p = sig->params[i];
+        use(o);
+        std::string what = "argument " + std::to_string(i + 1) + " of the constructor of '" + cls + "'";
+        if (p.isRef && !p.ty.cb && !o->lvalue) semError("cannot bind non-const reference to an rvalue in " + what);
+        checkAssign(p.ty, o, what);
+        vals.push_back(p.isRef ? refTarget(o) : rval(o));
+    }
+    for (size_t i = vals.size(); i-- > 0;) tacGen.emit("param", vals[i], "", "");
+    tacGen.emit("param", addr, "", "");                         // the object, like 'this' of any method
+    tacGen.emit("call", ctorName(cls, args.size()), std::to_string(vals.size() + 1), "");
+}
+
+static void emitDtorCall(const std::string& cls, const std::string& addr) {
+    tacGen.emit("param", addr, "", "");
+    tacGen.emit("call", dtorName(cls), "1", "");
+}
+
+// Default-construct the 'count' objects (a number or a variable) that start at 'base' (an array or a pointer).
+static void emitConstructArray(const std::string& base, const std::string& cls, const std::string& count) {
+    std::string i = tacGen.newTemp(makeType("int"));
+    std::string top = tacGen.newLabel(), done = tacGen.newLabel();
+    tacGen.emit("=", "0", "", i);
+    tacGen.emit("label", "", "", top);
+    std::string more = tacGen.newTemp(makeType("int"));
+    tacGen.emit("<", i, count, more);
+    tacGen.emit("ifFalse", more, "", done);
+    std::string a = tacGen.newTemp(addressType());
+    tacGen.emit("addridx", base, i, a, (int)objectSize(cls));
+    emitCtorCall(cls, a, std::vector<Operand*>());
+    std::string next = tacGen.newTemp(makeType("int"));
+    tacGen.emit("+", i, "1", next);
+    tacGen.emit("=", next, "", i);
+    tacGen.emit("goto", "", "", top);
+    tacGen.emit("label", "", "", done);
+}
+
+// Destroy the 'count' objects that start at 'base', last one first.
+static void emitDestroyArray(const std::string& base, const std::string& cls, const std::string& count) {
+    std::string i = tacGen.newTemp(makeType("int"));
+    std::string top = tacGen.newLabel(), done = tacGen.newLabel();
+    tacGen.emit("=", count, "", i);
+    tacGen.emit("label", "", "", top);
+    std::string more = tacGen.newTemp(makeType("int"));
+    tacGen.emit(">", i, "0", more);
+    tacGen.emit("ifFalse", more, "", done);
+    std::string prev = tacGen.newTemp(makeType("int"));
+    tacGen.emit("-", i, "1", prev);
+    tacGen.emit("=", prev, "", i);
+    std::string a = tacGen.newTemp(addressType());
+    tacGen.emit("addridx", base, i, a, (int)objectSize(cls));
+    emitDtorCall(cls, a);
+    tacGen.emit("goto", "", "", top);
+    tacGen.emit("label", "", "", done);
+}
+
+// Construct the variable 'var' (an object, or an array of objects with 'dims').
+static void constructVariable(const std::string& var, const std::string& cls, const std::vector<long>& dims,
+                              const std::vector<Operand*>& args) {
+    if (!dims.empty()) {
+        if (!args.empty()) semError("an array of objects cannot be given constructor arguments");
+        emitConstructArray(var, cls, numstr(arrayCount(dims)));
+        return;
+    }
+    std::string a = tacGen.newTemp(addressType());
+    tacGen.emit("addr", var, "", a);
+    emitCtorCall(cls, a, args);
+}
+
+static void emitDestroyItem(const CleanupItem& it) {
+    if (it.count > 0) {
+        emitDestroyArray(it.var, it.cls, numstr(it.count));
+    } else {
+        std::string a = tacGen.newTemp(addressType());
+        tacGen.emit("addr", it.var, "", a);
+        emitDtorCall(it.cls, a);
+    }
+}
+
+// The objects of one scope, last declared first.
+static void emitScopeCleanup(size_t frame) {
+    if (frame >= cleanups.size()) return;
+    const std::vector<CleanupItem>& items = cleanups[frame];
+    for (size_t i = items.size(); i-- > 0;) emitDestroyItem(items[i]);
+}
+
+// The scopes from the innermost down to 'depth' (inclusive), for return / break / continue.
+// 'keep' names an object that must not be destroyed (the local that is being returned).
+static void emitCleanupsDownTo(size_t depth, const std::string& keep) {
+    for (size_t f = scopes.size(); f-- > depth && f < cleanups.size();) {
+        const std::vector<CleanupItem>& items = cleanups[f];
+        for (size_t i = items.size(); i-- > 0;)
+            if (items[i].var != keep) emitDestroyItem(items[i]);
+    }
+}
+
+// Members that are objects: construct (in declaration order) / destroy (in reverse) at 'this'.
+static std::string memberAddress(const FieldInfo& f) {
+    if (f.offset == 0) return "this";
+    std::string a = tacGen.newTemp(addressType());
+    tacGen.emit("+", "this", numstr(f.offset), a);
+    return a;
+}
+
+static void emitMemberCtors(const std::string& cls) {
+    const AggrLayout* al = finalLayouts.find(cls);
+    std::set<std::string> used;
+    if (al) {
+        for (size_t i = 0; i < al->fields.size(); ++i) {
+            const FieldInfo& f = al->fields[i];
+            const InitEntry* entry = nullptr;
+            for (size_t k = 0; k < curInitList.size(); ++k)
+                if (curInitList[k].member == f.name) { entry = &curInitList[k]; used.insert(f.name); }
+            std::string mc = objectClass(f.ty);
+            if (!mc.empty() && needsCtor(mc)) {
+                static const std::vector<Operand*> none;
+                if (!f.dims.empty()) emitConstructArray(memberAddress(f), mc, numstr(arrayCount(f.dims)));
+                else emitCtorCall(mc, memberAddress(f), entry ? entry->args : none);
+            } else if (entry && f.dims.empty() && entry->args.size() == 1) {
+                // a plain member: member(value)
+                std::string v = rval(entry->args[0]);
+                tacGen.emit("store", v, "", "this", (int)accessSize(f.ty), (int)f.offset);
+            }
+        }
+    }
+    for (size_t k = 0; k < curInitList.size(); ++k)
+        if (!used.count(curInitList[k].member))
+            semError("'" + curInitList[k].member + "' is not a member of '" + cls + "'");
+    curInitList.clear();
+}
+
+static void emitMemberDtors(const std::string& cls) {
+    const AggrLayout* al = finalLayouts.find(cls);
+    if (!al) return;
+    for (size_t i = al->fields.size(); i-- > 0;) {
+        const FieldInfo& f = al->fields[i];
+        std::string mc = objectClass(f.ty);
+        if (mc.empty() || !needsDtor(mc)) continue;
+        if (!f.dims.empty()) emitDestroyArray(memberAddress(f), mc, numstr(arrayCount(f.dims)));
+        else emitDtorCall(mc, memberAddress(f));
+    }
+}
+
+static void registerDestructor(const std::string& var, const std::string& cls, long count, bool global) {
+    CleanupItem it;
+    it.var = var;
+    it.cls = cls;
+    it.count = count;
+    if (global) {
+        GlobalObject g;
+        g.item = it;
+        globalObjects.push_back(g);
+    } else if (!cleanups.empty()) {
+        cleanups.back().push_back(it);
+    }
+}
+
+// After the whole program has been read: the destructors of the global objects, last constructed first.
+static void emitGlobalFini() {
+    tacGen.setFiniMode(true);
+    for (size_t i = globalObjects.size(); i-- > 0;) emitDestroyItem(globalObjects[i].item);
+    tacGen.setFiniMode(false);
+}
+
+// A class that needs construction (or destruction) only through its members gets the function it lacks.
+static void synthesize(const std::string& cls, bool isCtor) {
+    FuncInfo fi;
+    fi.name = isCtor ? ctorName(cls, 0) : dtorName(cls);
+    fi.isMethod = true;
+    fi.ret = makeType("void");
+    VarInfo self;
+    self.name = "this";
+    self.ty = makeType(cls, 1, 0, true);
+    self.isParam = true;
+    fi.params.push_back(self);
+    tacGen.beginFunction(fi);
+    tacGen.emit("func_begin", "", "", fi.name);
+    if (isCtor) { curInitList.clear(); emitMemberCtors(cls); }
+    else emitMemberDtors(cls);
+    tacGen.emit("func_end", "", "", fi.name);
+    FuncSig sig;
+    sig.ret = makeType("void");
+    sig.defined = true;
+    funcSigs[fi.name] = sig;
+    if (isCtor) ctorArities[cls].insert(0);
+    else dtorClasses.insert(cls);
+}
+
+static void synthesizeSpecials(const std::string& cls) {
+    if (in_func || cls.empty()) return;                 // a class defined inside a function: not supported
+    if (needsCtor(cls) && ctorArities[cls].empty()) synthesize(cls, true);
+    if (needsDtor(cls) && !dtorClasses.count(cls)) synthesize(cls, false);
+}
+
+/* ------------------------------------------------------------------
    Declaration helpers
    ------------------------------------------------------------------ */
 
@@ -1425,6 +1710,25 @@ static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
     vi.isExtern = sp->isExtern;
     tacGen.declareVar(vi);
 
+    // objects with constructors / destructors
+    std::string cls = (!d->isRef && !sp->isExtern) ? objectClass(ty) : std::string();
+    std::vector<Operand*> cargs = d->ctorArgs;
+    if (d->hasCtorArgs && cls.empty()) {
+        // int x(5);  means  int x = 5;
+        if (cargs.size() == 1 && !init && ty.arr == 0 && !d->isRef) {
+            init = new InitNode();
+            init->op = cargs[0];
+        } else {
+            semError("invalid initializer for '" + d->name + "'");
+        }
+    }
+    if (!cls.empty() && !init && (needsCtor(cls) || d->hasCtorArgs)) {
+        if (staticLocal) tacGen.setForceGlobal(true);
+        constructVariable(s.mangled, cls, vi.dims, cargs);
+        if (staticLocal) tacGen.setForceGlobal(false);
+    }
+    if (!cls.empty() && needsDtor(cls)) registerDestructor(s.mangled, cls, arrayCount(vi.dims), !in_func || staticLocal);
+
     if (init) {
         // initializer type checks (the leaf is still unevaluated here)
         if (init->isList) {
@@ -1480,6 +1784,7 @@ static void beginFunction(Declarator* d) {
     fn_labels.clear();
     fn_gotos.clear();
     fnNameCount.clear();
+    fn_scope_base = scopes.size();
     pushScope();
 
     FuncInfo fi;
@@ -1513,6 +1818,8 @@ static void beginFunction(Declarator* d) {
         s.ptr = p.ptr;
         s.isFuncPtr = p.isFuncPtr;
         declareSym(p.name, s);
+        std::string pc = (!p.isRef && p.dims.empty() && !p.isFuncPtr) ? objectClass(p.ty) : std::string();
+        if (!pc.empty() && needsDtor(pc)) registerDestructor(p.name, pc, 0, false);   // a by-value parameter
     }
     tacGen.beginFunction(fi);
     recordSignature(cur_func, d, sp, true);
@@ -1526,8 +1833,9 @@ static void endFunction() {
         if (!fn_labels.count(fn_gotos[i].first))
             semError("label '" + fn_gotos[i].first + "' used but not defined in function '" + cur_func + "'",
                      fn_gotos[i].second);
+    emitScopeCleanup(scopes.size() - 1);                 // by-value parameters with destructors
     tacGen.emit("func_end", "", "", cur_func);
-    popScope();
+    popScope(false);
     in_func = false;
     cur_returns_ref = false;
     cur_ret = Type();
@@ -1579,6 +1887,82 @@ static void defineLabel(const std::string& name) {
     if (!fn_labels.insert(name).second) semError("duplicate label '" + name + "'");
 }
 
+// ---- the definitions written in a class body ----
+
+static void beginCtor(Declarator* head) {
+    const std::string cls = head->name;
+    if (cls != cur_aggr) semError("constructor name '" + cls + "' does not match the class '" + cur_aggr + "'");
+    normalizeParams(head->params);
+    size_t n = head->params.size();
+    if (!ctorArities[cur_aggr].insert((int)n).second)
+        semError("constructor of '" + cur_aggr + "' with " + std::to_string(n) + " parameter(s) is already defined");
+    head->name = cls + "#" + std::to_string(n);
+    DeclSpec* sp = new DeclSpec();
+    sp->type = "void";
+    spec_stack.push_back(sp);                           // endFunction pops it
+    curInitList.clear();
+    beginFunction(head);
+}
+
+static void beginDtor(const std::string& cls) {
+    if (cls != cur_aggr) semError("destructor name '~" + cls + "' does not match the class '" + cur_aggr + "'");
+    if (!dtorClasses.insert(cur_aggr).second) semError("destructor of '" + cur_aggr + "' is already defined");
+    Declarator* d = new Declarator();
+    d->name = "~" + cls;
+    d->isFunc = true;
+    DeclSpec* sp = new DeclSpec();
+    sp->type = "void";
+    spec_stack.push_back(sp);
+    cur_is_dtor = true;
+    beginFunction(d);
+}
+
+static void endDtor() {
+    emitMemberDtors(cur_aggr);
+    cur_is_dtor = false;
+    endFunction();
+}
+
+static void addInit(const std::string& member, ArgVec* args) {
+    InitEntry e;
+    e.member = member;
+    e.args = args->items;
+    curInitList.push_back(e);
+}
+
+// return: destroy the function's objects (the local being returned is moved out, like a C++ return of a local)
+static void emitReturnCleanups(Operand* value) {
+    std::string keep;
+    if (value && value->kind == Operand::VALUE && !value->place.empty()) keep = value->place;
+    emitCleanupsDownTo(fn_scope_base, keep);
+    if (cur_is_dtor) emitMemberDtors(cur_aggr);
+}
+
+// After the first pass: which classes need construction / destruction (their own or through members).
+static void computeNeeds() {
+    needCtor.clear();
+    needDtor.clear();
+    const std::vector<std::string>& names = finalLayouts.classNames();
+    for (size_t i = 0; i < names.size(); ++i) {
+        std::map<std::string, std::set<int> >::iterator it = finalCtorArities.find(names[i]);
+        if (it != finalCtorArities.end() && !it->second.empty()) needCtor.insert(names[i]);
+        if (finalDtorClasses.count(names[i])) needDtor.insert(names[i]);
+    }
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t i = 0; i < names.size(); ++i) {
+            const AggrLayout* al = finalLayouts.find(names[i]);
+            for (size_t k = 0; al && k < al->fields.size(); ++k) {
+                std::string mc = objectClass(al->fields[k].ty);
+                if (mc.empty()) continue;
+                if (needCtor.count(mc) && !needCtor.count(names[i])) { needCtor.insert(names[i]); changed = true; }
+                if (needDtor.count(mc) && !needDtor.count(names[i])) { needDtor.insert(names[i]); changed = true; }
+            }
+        }
+    }
+}
+
 /* ------------------------------------------------------------------
    Loop support. Each loop pushes one context. break/continue have their own
    stacks because a switch also accepts break.
@@ -1593,6 +1977,8 @@ static void enterLoop(const LoopCtx& c, const std::string& continueTo) {
     loop_stack.push_back(c);
     continue_stack.push(continueTo);
     break_stack.push(c.end);
+    break_depth.push(scopes.size());
+    continue_depth.push(scopes.size());
 }
 
 static LoopCtx leaveLoop() {
@@ -1600,6 +1986,8 @@ static LoopCtx leaveLoop() {
     loop_stack.pop_back();
     continue_stack.pop();
     break_stack.pop();
+    break_depth.pop();
+    continue_depth.pop();
     return c;
 }
 
@@ -1693,6 +2081,7 @@ static void beginSwitch(Operand* e) {
     c.end = tacGen.newLabel();
     switch_stack.push_back(c);
     break_stack.push(c.end);
+    break_depth.push(scopes.size());
     tacGen.emit("goto", "", "", c.test);
 }
 
@@ -1727,6 +2116,7 @@ static void endSwitch() {
     SwitchCtx c = switch_stack.back();
     switch_stack.pop_back();
     break_stack.pop();
+    break_depth.pop();
     tacGen.emit("goto", "", "", c.end);
     tacGen.emit("label", "", "", c.test);
     for (size_t i = 0; i < c.cases.size(); ++i) {
@@ -1832,27 +2222,71 @@ static long sizeOfOperand(Operand* o) {
     return accessSize(o->ty);
 }
 
-// new T / new T[n] become a call to malloc; delete / delete[] a call to free.
-// 'stars' is the number of '*' written after the type: new int*[n] allocates n pointers.
-static Operand* newObject(const std::string& typeName_, int stars, Operand* count) {
+// new T / new T(args) / new T[n] call malloc and then the constructor(s); delete / delete[] call the destructor(s)
+// and then free. 'stars' is the number of '*' written after the type: new int*[n] allocates n pointers.
+// A new[] of a type with a destructor keeps the element count in a 4-byte cookie in front of the array.
+static Operand* newObject(const std::string& typeName_, int stars, Operand* count, ArgVec* ctorArgs) {
     Type elem = typeFromName(typeName_, stars, 0, false);
     long size = elem.ptr > 0 ? 4 : finalLayouts.baseSize(elem);
     if (elem.aggr && elem.ptr == 0 && size == 0) semError("invalid use of incomplete type '" + elem.base + "'");
+    std::string cls = objectClass(elem);
+    bool cookie = count && !cls.empty() && needsDtor(cls);
+    std::string n;                                           // the element count, evaluated once
     std::string bytes = numstr(size);
     if (count) {
         if (known(count->ty) && !isIntegral(count->ty)) semError("size in new-expression must be an integer");
-        bytes = mulStr(rval(count), numstr(size));
+        n = rval(count);
+        bytes = mulStr(n, numstr(size));
     }
+    if (cookie) bytes = addStr(bytes, "4");
     tacGen.emit("param", bytes, "", "");
     Type pt = typeFromName(typeName_, stars + 1, 0, false);
     std::string t = tacGen.newTemp(pt);
     tacGen.emit("call", "malloc", "1", t);
-    return typedOp(t, pt);
+    std::string r = t;
+    if (cookie) {
+        tacGen.emit("store", n, "", t, 4, 0);
+        r = tacGen.newTemp(pt);
+        tacGen.emit("+", t, "4", r);
+    }
+    std::vector<Operand*> none;
+    const std::vector<Operand*>& args = ctorArgs ? ctorArgs->items : none;
+    if (!cls.empty() && count) {
+        if (needsCtor(cls)) emitConstructArray(r, cls, n);
+    } else if (!cls.empty()) {
+        if (needsCtor(cls) || ctorArgs) emitCtorCall(cls, r, args);
+    } else if (ctorArgs && args.size() == 1) {
+        tacGen.emit("store", rval(args[0]), "", r, (int)accessSize(elem), 0);         // new int(5)
+    }
+    return typedOp(r, pt);
 }
 
-static void deleteObject(const std::string& ptr) {
-    tacGen.emit("param", ptr, "", "");
-    tacGen.emit("call", "free", "1", "");
+static void deleteObject(Operand* e, bool array) {
+    std::string p = rval(e);
+    std::string cls = (known(e->ty) && e->ty.aggr && levels(e->ty) == 1) ? e->ty.base : std::string();
+    if (cls.empty() || !needsDtor(cls)) {
+        tacGen.emit("param", p, "", "");
+        tacGen.emit("call", "free", "1", "");
+        return;
+    }
+    std::string skip = tacGen.newLabel();                    // delete of a null pointer does nothing
+    std::string isNull = tacGen.newTemp(makeType("int"));
+    tacGen.emit("==", p, "0", isNull);
+    tacGen.emit("if", isNull, "", skip);
+    if (!array) {
+        emitDtorCall(cls, p);
+        tacGen.emit("param", p, "", "");
+        tacGen.emit("call", "free", "1", "");
+    } else {
+        std::string block = tacGen.newTemp(addressType());   // the cookie in front of the elements
+        std::string n = tacGen.newTemp(makeType("int"));
+        tacGen.emit("-", p, "4", block);
+        tacGen.emit("deref", block, "", n, 4, 0);
+        emitDestroyArray(p, cls, n);
+        tacGen.emit("param", block, "", "");
+        tacGen.emit("call", "free", "1", "");
+    }
+    tacGen.emit("label", "", "", skip);
 }
 
 // Forget everything the parser learned, so that the program can be read again.
@@ -1893,6 +2327,15 @@ static void resetState() {
     enum_next_known = true;
     fnNameCount.clear();
     staticNameCount.clear();
+    cleanups.assign(1, std::vector<CleanupItem>());
+    globalObjects.clear();
+    curInitList.clear();
+    ctorArities.clear();
+    dtorClasses.clear();
+    cur_is_dtor = false;
+    fn_scope_base = 0;
+    break_depth = std::stack<size_t>();
+    continue_depth = std::stack<size_t>();
     sem_errors = 0;
     sem_warnings = 0;
     has_error = 0;
@@ -1912,6 +2355,7 @@ static void resetState() {
     InitNode* init;
     Ctx* ctx;
     CastTy* cast;
+    ArgVec* args;
     int flag;
 }
 
@@ -1942,6 +2386,8 @@ static void resetState() {
 /* Precedence rules */
 /* in "new int * 2" and "new int *[n]" the '*' belongs to the type: shift it (NEW_TYPE ranks below STAR) */
 %nonassoc NEW_TYPE
+%nonassoc TYPE_AS_TYPE
+%nonassoc LEFT_PAREN       /* "Counter(" in a class body starts a constructor, "new T(" gives constructor arguments */
 %right ASSIGN PLUS_ASSIGN MINUS_ASSIGN MULTIPLY_ASSIGN DIVIDE_ASSIGN MODULO_ASSIGN
         BITWISE_AND_ASSIGN BITWISE_OR_ASSIGN BITWISE_XOR_ASSIGN
         SHIFT_LEFT_ASSIGN SHIFT_RIGHT_ASSIGN
@@ -1975,6 +2421,8 @@ static void resetState() {
 %type <op> equality_expression relational_expression shift_expression
 %type <op> additive_expression multiplicative_expression cast_expression
 %type <cast> cast_type
+%type <args> ctor_arg_list ctor_args_opt
+%type <decl> ctor_head
 %type <op> unary_expression postfix_expression primary_expression
 
 %start program
@@ -2053,6 +2501,8 @@ class_member
     : access_specifier COLON { cur_access = $1; }
     | declaration
     | function_definition
+    | ctor_definition
+    | dtor_definition
     ;
 
 struct_member_list_opt
@@ -2068,6 +2518,56 @@ struct_member_list
 struct_member
     : declaration
     | function_definition
+    | ctor_definition
+    | dtor_definition
+    ;
+
+/* Counter(int a) : x(a), y(0) { ... }     ~Counter() { ... } */
+ctor_definition
+    : ctor_head { beginCtor($1); } ctor_init_opt { emitMemberCtors(cur_aggr); } compound_statement { endFunction(); }
+    ;
+
+ctor_head
+    : TYPE_NAME LEFT_PAREN parameter_list_opt RIGHT_PAREN {
+        $$ = new Declarator();
+        $$->name = $1;
+        $$->isFunc = true;
+        $$->params = $3->items;
+    }
+    ;
+
+ctor_init_opt
+    : /* empty */
+    | COLON ctor_init_list
+    ;
+
+ctor_init_list
+    : ctor_init
+    | ctor_init_list COMMA ctor_init
+    ;
+
+ctor_init
+    : IDENTIFIER LEFT_PAREN ctor_args_opt RIGHT_PAREN { addInit($1, $3); }
+    ;
+
+dtor_definition
+    : BITWISE_NOT TYPE_NAME LEFT_PAREN RIGHT_PAREN { beginDtor($2); } compound_statement { endDtor(); }
+    ;
+
+ctor_args_opt
+    : /* empty */   { $$ = new ArgVec(); }
+    | ctor_arg_list { $$ = $1; }
+    ;
+
+ctor_arg_list
+    : assignment_expression {
+        $$ = new ArgVec();
+        $$->items.push_back($1);
+    }
+    | ctor_arg_list COMMA assignment_expression {
+        $$ = $1;
+        $$->items.push_back($3);
+    }
     ;
 
 access_specifier
@@ -2128,7 +2628,7 @@ type_specifier
     | KW_CLASS tag_name     { typeNames.insert($2); $$ = $2; }
     | KW_UNION tag_name     { typeNames.insert($2); $$ = $2; }
     | KW_ENUM tag_name      { typeNames.insert($2); $$ = $2; }
-    | TYPE_NAME             { $$ = $1; }
+    | TYPE_NAME %prec TYPE_AS_TYPE { $$ = $1; }
     | anon_aggr_head LEFT_BRACE struct_member_list_opt RIGHT_BRACE { endAggr(); $$ = $1; }
     ;
 
@@ -2207,6 +2707,11 @@ direct_declarator
     | direct_declarator LEFT_BRACKET expression_opt RIGHT_BRACKET {
         $$ = $1;
         $$->dims.push_back(dimString($3));
+    }
+    | direct_declarator LEFT_PAREN ctor_arg_list RIGHT_PAREN {
+        $$ = $1;                           // Counter c(1, 2);  the arguments of the constructor
+        $$->ctorArgs = $3->items;
+        $$->hasCtorArgs = true;
     }
     | direct_declarator LEFT_PAREN parameter_list_opt RIGHT_PAREN {
         $$ = $1;
@@ -2381,16 +2886,26 @@ jump_statement
         tacGen.emit("goto", "user", "", $2);
     }
     | KW_BREAK SEMICOLON {
-        if (break_stack.empty()) semError("break statement not within a loop or switch");
-        else tacGen.emit("goto", "", "", break_stack.top());
+        if (break_stack.empty()) {
+            semError("break statement not within a loop or switch");
+        } else {
+            emitCleanupsDownTo(break_depth.top(), "");           // destructors of the objects the jump leaves
+            tacGen.emit("goto", "", "", break_stack.top());
+        }
     }
     | KW_CONTINUE SEMICOLON {
-        if (continue_stack.empty()) semError("continue statement not within a loop");
-        else tacGen.emit("goto", "", "", continue_stack.top());
+        if (continue_stack.empty()) {
+            semError("continue statement not within a loop");
+        } else {
+            emitCleanupsDownTo(continue_depth.top(), "");
+            tacGen.emit("goto", "", "", continue_stack.top());
+        }
     }
     | KW_RETURN expression_opt SEMICOLON {
         checkReturn($2);
-        tacGen.emit("return", returnValue($2), "", "");
+        std::string rv = returnValue($2);
+        emitReturnCleanups($2);                                  // after the value is computed
+        tacGen.emit("return", rv, "", "");
     }
     ;
 
@@ -2588,25 +3103,28 @@ unary_expression
         $$ = typedOp(numstr(n), makeType("int"));
     }
     | KW_NEW type_specifier %prec NEW_TYPE {
-        $$ = newObject($2, 0, nullptr);
+        $$ = newObject($2, 0, nullptr, nullptr);
+    }
+    | KW_NEW type_specifier LEFT_PAREN ctor_args_opt RIGHT_PAREN {
+        $$ = newObject($2, 0, nullptr, $4);
     }
     | KW_NEW type_specifier new_stars %prec NEW_TYPE {
-        $$ = newObject($2, $3, nullptr);
+        $$ = newObject($2, $3, nullptr, nullptr);
     }
     | KW_NEW type_specifier LEFT_BRACKET expression RIGHT_BRACKET {
-        $$ = newObject($2, 0, $4);
+        $$ = newObject($2, 0, $4, nullptr);
     }
     | KW_NEW type_specifier new_stars LEFT_BRACKET expression RIGHT_BRACKET {
-        $$ = newObject($2, $3, $5);
+        $$ = newObject($2, $3, $5, nullptr);
     }
     | KW_DELETE unary_expression {
         if (known($2->ty) && levels($2->ty) == 0) semError("type argument of 'delete' is not a pointer");
-        deleteObject(rval($2));
+        deleteObject($2, false);
         $$ = typedOp("", makeType("void"));
     }
     | KW_DELETE LEFT_BRACKET RIGHT_BRACKET unary_expression {
         if (known($4->ty) && levels($4->ty) == 0) semError("type argument of 'delete[]' is not a pointer");
-        deleteObject(rval($4));
+        deleteObject($4, true);
         $$ = typedOp("", makeType("void"));
     }
     ;
@@ -2701,15 +3219,26 @@ static int runPass(FILE* input) {
 static int compileFile(FILE* file) {
     finalLayouts.clear();
     finalMethods.clear();
+    finalCtorArities.clear();
+    finalDtorClasses.clear();
+    finalFuncSigs.clear();
+    needCtor.clear();
+    needDtor.clear();
     FILE* scratch = tmpfile();
     if (scratch) diag_out = scratch;
     runPass(file);
     finalLayouts = layoutBuild;
     finalLayouts.finalize();
     finalMethods = classMethods;
+    finalCtorArities = ctorArities;
+    finalDtorClasses = dtorClasses;
+    finalFuncSigs = funcSigs;
+    computeNeeds();
     diag_out = stderr;
     if (scratch) fclose(scratch);
-    return runPass(file);
+    int res = runPass(file);
+    if (res == 0 && !has_error) emitGlobalFini();       // destructors of global objects, run after main
+    return res;
 }
 
 // Compile the runtime library (C source embedded in the compiler) into 'rt' / 'rtLayouts'.

@@ -67,6 +67,9 @@ private:
     std::vector<TACInstruction> globalInstructions;  // global / static initialisers
     std::vector<FuncInfo> funcs;
     FuncInfo globalInit;                             // temporaries used by the global initialisers
+    std::vector<TACInstruction> finiInstructions;    // destructors of global objects, run after main
+    FuncInfo globalFini;
+    bool finiMode = false;
     std::vector<VarInfo> globals;
     int temp_count = 1;   // Start at t1
     int label_count = 1;  // Start at L1
@@ -87,13 +90,17 @@ public:
               const std::string& arg2, const std::string& result, int sz = 0, int off = 0);
 
     void setForceGlobal(bool v) { forceGlobal = v; }
-    bool inGlobalContext() const { return forceGlobal || !inFunction; }
+    bool inGlobalContext() const { return forceGlobal || finiMode || !inFunction; }
+    // While set, instructions and temporaries go to the _global_fini section.
+    void setFiniMode(bool v) { finiMode = v; }
 
     void beginFunction(const FuncInfo& f);
     void declareVar(const VarInfo& v);     // local of the current function, or a global / static
 
     const std::vector<FuncInfo>& functions() const { return funcs; }
     const FuncInfo& initInfo() const { return globalInit; }
+    const FuncInfo& finiInfo() const { return globalFini; }
+    const std::vector<TACInstruction>& finiCode() const { return finiInstructions; }
     const std::vector<VarInfo>& globalVars() const { return globals; }
     const std::vector<TACInstruction>& code() const { return instructions; }
     const std::vector<TACInstruction>& initCode() const { return globalInstructions; }

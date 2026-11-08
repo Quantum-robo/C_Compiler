@@ -1,0 +1,31 @@
+alloc 4
+46 12
+alloc 2
+57
+free 2
+free 4
+after block
+Text(hello)
+HELLO 5
+Tracer(5)
+made 5
+x=5
+Tracer(6)
+consume 6
+~Tracer(6)
+after consume
+alloc 3
+8
+free 3
+Tracer(10)
+Slot(1)
+Tracer(20)
+Slot(2)
+end
+~Slot(2)
+~Tracer(20)
+~Slot(1)
+~Tracer(10)
+~Tracer(6)
+~Tracer(5)
+~Text(HELLO)

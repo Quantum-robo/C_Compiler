@@ -9,6 +9,10 @@ void TACGenerator::reset() {
     funcs.clear();
     globalInit = FuncInfo();
     globalInit.name = "_global_init";
+    finiInstructions.clear();
+    globalFini = FuncInfo();
+    globalFini.name = "_global_fini";
+    finiMode = false;
     globals.clear();
     temp_count = 1;
     label_count = 1;
@@ -19,13 +23,13 @@ void TACGenerator::reset() {
 std::string TACGenerator::newTemp(const Type& ty) {
     std::string name = "t" + std::to_string(temp_count++);
     Type t = known(ty) ? ty : makeType("int");
-    (inGlobalContext() ? globalInit.temps : funcs.back().temps).push_back(std::make_pair(name, t));
+    (finiMode ? globalFini.temps : inGlobalContext() ? globalInit.temps : funcs.back().temps).push_back(std::make_pair(name, t));
     return name;
 }
 
 void TACGenerator::setTempType(const std::string& temp, const Type& ty) {
     if (!known(ty)) return;
-    std::vector<std::pair<std::string, Type> >& v = inGlobalContext() ? globalInit.temps : funcs.back().temps;
+    std::vector<std::pair<std::string, Type> >& v = finiMode ? globalFini.temps : inGlobalContext() ? globalInit.temps : funcs.back().temps;
     for (size_t i = v.size(); i-- > 0;)
         if (v[i].first == temp) { v[i].second = ty; return; }
 }
@@ -40,7 +44,7 @@ void TACGenerator::emit(const std::string& op, const std::string& arg1, const st
     if (op == "func_begin") inFunction = true;
     TACInstruction in;
     in.op = op; in.arg1 = arg1; in.arg2 = arg2; in.result = result; in.sz = sz; in.off = off;
-    (global ? globalInstructions : instructions).push_back(in);
+    (finiMode ? finiInstructions : global ? globalInstructions : instructions).push_back(in);
     if (op == "func_end") inFunction = false;
 }
 
@@ -143,6 +147,10 @@ void TACGenerator::printTAC(FILE* out) const {
         for (size_t i = 0; i < globalInstructions.size(); ++i) globalInstructions[i].print(out);
     }
     for (size_t i = 0; i < instructions.size(); ++i) instructions[i].print(out);
+    if (!finiInstructions.empty()) {
+        fprintf(out, "\n_global_fini:\n");
+        for (size_t i = 0; i < finiInstructions.size(); ++i) finiInstructions[i].print(out);
+    }
 }
 
 static std::string varDesc(const VarInfo& v, const LayoutTable& L) {
