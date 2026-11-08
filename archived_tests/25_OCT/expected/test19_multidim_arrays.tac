@@ -1,6 +1,7 @@
 
 main:
     BeginFunc
+    Zero m :24
     m[0] = 1
     m[1] = 2
     m[2] = 3

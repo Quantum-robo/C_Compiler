@@ -7,15 +7,15 @@ The pipeline has four phases:
 1. **Lexical analysis** (Flex): recognizes tokens; the standalone `lexer` prints a token / token-type table.
 2. **Syntax analysis** (Bison): validates the grammar and reports errors with line numbers.
 3. **Semantic analysis**: declaration, type, control-flow, function and access-control checks, reported as errors or warnings.
-4. **Intermediate code generation**: three-address code (TAC) for every program that passes the earlier phases.
+4. **Intermediate code generation**: typed three-address code (TAC) for every program that passes the earlier phases, together with the struct layouts and symbol tables a code generator needs (see [docs/IR.md](docs/IR.md)).
 
-Machine-code generation is out of scope; the compiler stops at TAC.
+The program is read twice (the first pass collects the class layouts), so a method can use members declared after it.
+MIPS code generation is the next step of the project; for now the compiler stops at TAC.
 
 ## Project Structure
 
 ```text
 C_Compiler/
-
 ├── src/
 │   ├── lexer/
 │   │   ├── Lexer.l
@@ -26,25 +26,26 @@ C_Compiler/
 │   ├── parser/
 │   │   └── parser.y            (grammar + semantic checks + IR generation)
 │   ├── semantic/
-│   │   └── Types.hpp           (type model used by the semantic checks)
+│   │   ├── Types.hpp           (type model used by the semantic checks)
+│   │   ├── Layout.hpp
+│   │   └── Layout.cpp          (sizes, alignment and field offsets of structs / classes / unions)
 │   └── ir/
 │       ├── TAC.hpp
-│       └── TAC.cpp             (three-address-code generator)
-
+│       └── TAC.cpp             (three-address code, symbol tables and their printing)
 ├── tests/
 │   ├── lexer/                  (inputs for make test-lexer)
 │   ├── parser/                 (syntax tests, make test-parser)
 │   ├── semantic/               (feature programs, make test-semantic / make ir)
-│   └── 25_OCT/                 (feature tests, semantic error/warning/valid tests)
+│   └── ir/                     (IR and layout / symbol tables compared with expected/<name>.tac)
+├── archived_tests/
+│   └── 25_OCT/                 (archived front-end suite: expected IR, semantic error/warning/valid tests)
 │       ├── expected/           (reviewed expected IR, one .tac per feature test)
 │       ├── semantic_errors/
 │       └── semantic_valid/
-
 ├── test.c                      (sample input for make test)
-
 ├── docs/
+│   ├── IR.md                   (the typed three-address code, layouts and tables the code generator uses)
 │   └── LANGUAGE_GUIDE.md       (rules, limitations, enums, symbol table, commands, troubleshooting)
-
 ├── Makefile
 ├── run.sh
 └── README.md
@@ -93,6 +94,8 @@ For example:
 ```bash
 ./parser tests/parser/test1_types_and_vars.c
 ```
+
+Add `--tables` (`./parser --tables prog.c`) to also print and save the struct layouts and the symbol tables.
 
 For a valid program, the parser reports success, prints the three-address-code IR, and writes it to `<source_file>.tac` (or to the path given as a second argument):
 
@@ -172,6 +175,7 @@ make                # builds the lexer and parser
 | `archived_tests/25_OCT/semantic_errors/` | 71    | `err_*.c` must be rejected, `warn_*.c` accepted; stderr must contain the `// EXPECT:` text (line 1).  |
 | `archived_tests/25_OCT/semantic_valid/` | 22    | Tricky and realistic valid programs: accepted, with no diagnostics at all.                            |
 | `tests/semantic/`                   | 14    | Must compile (also used by `make test-semantic` and `make ir`).                                       |
+| `tests/ir/`                         | 5     | The IR and the layout / symbol tables (`--tables`) must equal `tests/ir/expected/<name>.tac`.         |
 
 `tests/lexer/` holds inputs for the standalone lexer (`make test-lexer`).
 
@@ -179,14 +183,14 @@ If the IR changes on purpose, review it and re-bless the expected files with `./
 
 If the executable cannot be launched at all (for example because Windows is blocking a freshly built `.exe`), `run.sh` stops with a clear message and exit status 2 instead of failing every test.
 
-A successful run (140 tests at the time of writing) ends with:
+A successful run of `make check` (24 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
 
 ```text
 ==============================
 Test Summary
 ==============================
-Total:  144
-Passed: 144
+Total:  24
+Passed: 24
 Failed: 0
 
 All tests passed!

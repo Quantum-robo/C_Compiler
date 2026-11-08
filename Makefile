@@ -47,9 +47,9 @@ lexer$(EXE): $(LEXER_GEN) $(PARSER_H) $(LEXER_DIR)/Token.cpp $(LEXER_DIR)/main.c
 
 # Compiler front end: lexer + parser + semantic checks + IR generation
 
-parser$(EXE): $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(HEADERS)
+parser$(EXE): $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -I$(LEXER_DIR) -I$(PARSER_DIR) -I$(IR_DIR) \
-		$(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(LDFLAGS) -o parser$(EXE)
+		$(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(LDFLAGS) -o parser$(EXE)
 	@$(call WARMUP,./parser$(EXE))
 
 $(PARSER_C) $(PARSER_H): $(PARSER_DIR)/parser.y

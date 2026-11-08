@@ -13,7 +13,7 @@ main:
     t4 = *pp
     *t4 = 20
     q = arr
-    t5 = q + 1
+    t5 = q + 4
     q = t5
     *q = 7
     t6 = *p

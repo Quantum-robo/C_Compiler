@@ -1,4 +1,9 @@
 #include "Token.hpp"
+#include <cstdio>
+
+// Where lexical, syntax and semantic diagnostics are written. The compiler redirects it to a scratch
+// file while it reads the program a first time to collect class layouts.
+FILE* diag_out = stderr;
 
 const char* tokenTypeToString(TokenType type)
 {

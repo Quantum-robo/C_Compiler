@@ -46,17 +46,14 @@ main:
     q = p
     t12 = &x
     rr = t12
-    t13 = sizeof *q
-    s1 = t13
-    t14 = sizeof p[1]
-    s2 = t14
-    t15 = sizeof *rr
-    s3 = t15
-    t16 = g + x
-    t17 = t16 + y
-    t18 = t17 + v
-    t19 = t18 + s1
-    t20 = t19 + s2
-    t21 = t20 + s3
-    Return t21
+    s1 = 4
+    s2 = 4
+    s3 = 4
+    t13 = g + x
+    t14 = t13 + y
+    t15 = t14 + v
+    t16 = t15 + s1
+    t17 = t16 + s2
+    t18 = t17 + s3
+    Return t18
     EndFunc

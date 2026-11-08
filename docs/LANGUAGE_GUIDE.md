@@ -27,6 +27,9 @@ Other rules:
 * **Library functions need no declaration.** `printf`, `scanf`, `malloc`, `free`, `NULL` and similar are known to the checker, and `#include` lines are skipped.
 * **Errors stop IR generation.** Any lexical, syntax or semantic error means no IR is written. Warnings do not stop it.
 * **Calls.** Arguments are pushed right to left, and a method call passes `this` last.
+* **Array sizes are constants.** `int a[10]`, `int a[N]` with an enumerator `N`, and `const int N = 10; int a[N];` are accepted; a size that depends on a run-time value is an error. The first size may be left out when there is an initializer (`int a[] = {1, 2, 3};`).
+* **Variables get unique IR names.** A second `i` in a sibling block becomes `i.2`, and a local that shadows a global is renamed (`x.1`); the IR therefore never needs scope information (see [IR.md](IR.md)).
+* **Sizes.** `char` is 1 byte, `short` 2, `int`, `long`, `float` and pointers 4, `double` 8. Struct members are aligned to their own size, and `sizeof` is evaluated by the compiler.
 
 ## 2. Enums
 

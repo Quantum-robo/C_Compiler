@@ -5,11 +5,14 @@
 #                                            folder and save each as ./<name>.TAC (run 'make' first)
 #   ./run.sh --test <executable>             run the suite in tests/, e.g.  ./run.sh --test ./parser
 #   ./run.sh --archived <executable>         run the archived front-end suite (archived_tests/25_OCT)
+#   ./run.sh --update <exe>                  re-bless the expected IR of tests/ir (only after review)
 #   ./run.sh --update --archived <exe>       re-bless the archived expected IR (only after review)
 #
 # Layout of tests/ (default run):
 #   tests/parser/*.c                       syntax tests; a name containing "_invalid" must be rejected
 #   tests/semantic/*.c                     must compile (IR is generated but not compared)
+#   tests/ir/*.c                           the IR and the layout / symbol tables (--tables) must equal
+#                                          tests/ir/expected/<name>.tac
 #
 # Layout of archived_tests/25_OCT (run with --archived):
 #   *.c                                    one program per language feature; the generated IR must
@@ -128,11 +131,11 @@ fail() { echo "  FAIL  $1"; failed=$((failed + 1)); }
 show() { sed 's/^/          /' "$1" | head -"${2:-12}"; }
 group() { echo ""; echo "== $1"; }
 
-# compile <source> <ir-output> <stderr-file>: exit status of the compiler
+# compile <source> <ir-output> <stderr-file> [flags]: exit status of the compiler
 compile() {
     local s i
     for i in 1 2 3; do
-        "$PARSER" "$1" "$2" > /dev/null 2> "$3"; s=$?
+        "$PARSER" $4 "$1" "$2" > /dev/null 2> "$3"; s=$?
         [ $s -lt 126 ] && break
         sleep 2   # the OS may block the first launch of a fresh executable
     done
@@ -232,6 +235,28 @@ for f in "$TESTS"/semantic/*.c; do
     mkdir -p "$OUT/semantic"
     if compile "$f" "$OUT/semantic/${name%.c}.tac" "$TMP.err"; then pass "$name"
     else fail "$name (rejected)"; show "$TMP.err"; fi
+done
+
+# ---- 6. IR tests: the generated IR and symbol / layout tables must match the reviewed expected output ----
+group "IR tests: generated IR and tables vs expected ($TESTS/ir)"
+for f in "$TESTS"/ir/*.c; do
+    [ -e "$f" ] || continue
+    total=$((total + 1))
+    name=$(basename "$f" .c)
+    mkdir -p "$OUT/ir" "$TESTS/ir/expected"
+    out="$OUT/ir/$name.tac"
+    exp="$TESTS/ir/expected/$name.tac"
+    if ! compile "$f" "$out" "$TMP.err" --tables; then
+        fail "$name (rejected)"; show "$TMP.err"
+    elif [ $UPDATE -eq 1 ]; then
+        cp "$out" "$exp"; pass "$name (expected IR updated)"
+    elif [ ! -f "$exp" ]; then
+        fail "$name (no expected IR; review the output, then run with --update)"
+    elif diff --strip-trailing-cr -u "$exp" "$out" > "$TMP.diff"; then
+        pass "$name"
+    else
+        fail "$name (IR differs from expected)"; show "$TMP.diff" 20
+    fi
 done
 
 fi

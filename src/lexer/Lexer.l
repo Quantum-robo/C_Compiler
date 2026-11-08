@@ -4,6 +4,7 @@
 #include "Token.hpp"
 #include "parser.tab.h" // Hooking up Bison's tokens
 extern int has_error;
+extern FILE* diag_out;     // where diagnostics go (stderr; muted during the layout pass)
 
 std::vector<LexedToken> lexed_tokens;
 
@@ -50,7 +51,7 @@ int current_col = 1;
 "/*"([^*]|\*+[^*/])*\*+"/"             {    /* ignore */ }
 
 "/*"([^*]|\*+[^*/])* {
-    fprintf(stderr,
+    fprintf(diag_out,
         "LEXICAL ERROR:unterminated block comment till line %d\n",
         yylineno-1
     );
@@ -63,7 +64,7 @@ int current_col = 1;
 \"([^\"\\\n]|\\.)*\" { return processToken(TokenType::StringLiteral, STRING_LITERAL); }
 
 \"([^\"\\\n]|\\.)*\n {
-    fprintf(stderr,
+    fprintf(diag_out,
         "LEXICAL ERROR: unterminated string literal %s at line %d\n",
         yytext,
         yylineno-1
@@ -78,7 +79,7 @@ int current_col = 1;
 \'([^\'\\\n]|\\.|\\x[0-9a-fA-F]+)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL); }
     /*\'([^\'\\\n]|\\.)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);}*/
 \'([^\'\\\n]|\\.){2,}\' {
-    fprintf(stderr,
+    fprintf(diag_out,
         "LEXICAL ERROR: invalid character literal %s at line %d\n",
         yytext,
         yylineno-1);
@@ -89,7 +90,7 @@ int current_col = 1;
         }
 
 \'([^\'\\\n]|\\.)*\n {
-    fprintf(stderr,
+    fprintf(diag_out,
         "LEXICAL ERROR: unterminated character literal %.*s at line %d\n",
         yyleng,
         yytext,
@@ -233,7 +234,7 @@ int current_col = 1;
 
 . {
     fprintf(
-        stderr,
+        diag_out,
         "LEXICAL ERROR: '%s' at line %d\n",
         yytext,
         yylineno

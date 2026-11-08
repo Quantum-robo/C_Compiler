@@ -1,48 +1,52 @@
 
 A::get:
     BeginFunc
-    Return this->v
+    t1 = *this
+    Return t1
     EndFunc
 
 A::twice:
     BeginFunc
     PushParam this
-    t1 = LCall A::get
-    PopParams 1
-    PushParam this
     t2 = LCall A::get
     PopParams 1
-    t3 = t1 + t2
-    Return t3
+    PushParam this
+    t3 = LCall A::get
+    PopParams 1
+    t4 = t2 + t3
+    Return t4
     EndFunc
 
 B::get:
     BeginFunc
-    t4 = this->w * 10
-    Return t4
+    t5 = *this
+    t6 = t5 * 10
+    Return t6
     EndFunc
 
 main:
     BeginFunc
-    t5 = &a
-    pa = t5
-    a.v = 3
-    b.w = 4
-    t6 = &a
-    PushParam t6
-    t7 = LCall A::get
+    t7 = &a
+    pa = t7
+    t8 = &a
+    *t8 = 3
+    t9 = &b
+    *t9 = 4
+    t10 = &a
+    PushParam t10
+    t11 = LCall A::get
     PopParams 1
-    x = t7
-    t8 = &b
-    PushParam t8
-    t9 = LCall B::get
+    x = t11
+    t12 = &b
+    PushParam t12
+    t13 = LCall B::get
     PopParams 1
-    y = t9
+    y = t13
     PushParam pa
-    t10 = LCall A::twice
+    t14 = LCall A::twice
     PopParams 1
-    z = t10
-    t11 = x + y
-    t12 = t11 + z
-    Return t12
+    z = t14
+    t15 = x + y
+    t16 = t15 + z
+    Return t16
     EndFunc

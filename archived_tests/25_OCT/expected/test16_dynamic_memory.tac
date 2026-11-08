@@ -1,29 +1,33 @@
 
 main:
     BeginFunc
-    t1 = new int
+    PushParam 4
+    t1 = LCall malloc
+    PopParams 1
     single = t1
     *single = 42
     n = 5
-    t2 = new int[n]
-    arr = t2
+    t2 = n * 4
+    PushParam t2
+    t3 = LCall malloc
+    PopParams 1
+    arr = t3
     i = 0
 L1:
-    t3 = i < n
-    IfFalse t3 Goto L4
+    t4 = i < n
+    IfFalse t4 Goto L4
     Goto L2
 L3:
-    t4 = i
-    t5 = i + 1
-    i = t5
+    t5 = i
+    t6 = i + 1
+    i = t6
     Goto L1
 L2:
-    t6 = i * 2
-    arr[i] = t6
+    t7 = i * 2
+    arr[i] = t7
     Goto L3
 L4:
-    t7 = sizeof n
-    t8 = n * t7
+    t8 = n * 4
     PushParam t8
     t9 = LCall malloc
     PopParams 1
@@ -33,7 +37,11 @@ L4:
     PushParam buf
     t11 = LCall free
     PopParams 1
-    delete single
-    delete arr
+    PushParam single
+    LCall free
+    PopParams 1
+    PushParam arr
+    LCall free
+    PopParams 1
     Return 0
     EndFunc

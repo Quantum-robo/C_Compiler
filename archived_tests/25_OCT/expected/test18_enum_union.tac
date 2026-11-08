@@ -10,11 +10,16 @@ main:
 L1:
     code = 2
 L2:
-    v.i = 65
-    v.c = 'A'
-    v.f = 3.14
-    t2 = v.i + 0
-    k = t2
-    t3 = code + k
-    Return t3
+    t2 = &v
+    *t2 = 65
+    t3 = &v
+    *t3 = 'A' :1
+    t4 = &v
+    *t4 = 3.14
+    t5 = &v
+    t6 = *t5
+    t7 = t6 + 0
+    k = t7
+    t8 = code + k
+    Return t8
     EndFunc

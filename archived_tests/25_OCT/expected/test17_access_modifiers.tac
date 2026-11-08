@@ -1,40 +1,45 @@
 
 Account::setPin:
     BeginFunc
-    this->pin = p
+    *this = p
     EndFunc
 
 Account::deposit:
     BeginFunc
     t1 = amt > 0
     IfFalse t1 Goto L1
-    t2 = this->balance + amt
-    this->balance = t2
+    t2 = *(this + 4)
+    t3 = t2 + amt
+    *(this + 4) = t3
 L1:
     EndFunc
 
 Account::getBalance:
     BeginFunc
-    Return this->balance
+    t4 = *(this + 4)
+    Return t4
     EndFunc
 
 main:
     BeginFunc
-    acc.id = 7
-    t3 = &acc
-    PushParam 1234
-    PushParam t3
-    t4 = LCall Account::setPin
-    PopParams 2
     t5 = &acc
-    PushParam 500.5
-    PushParam t5
-    t6 = LCall Account::deposit
+    *(t5 + 12) = 7
+    t6 = &acc
+    PushParam 1234
+    PushParam t6
+    t7 = LCall Account::setPin
     PopParams 2
-    t7 = &acc
-    PushParam t7
-    t8 = LCall Account::getBalance
+    t8 = &acc
+    PushParam 500.5
+    PushParam t8
+    t9 = LCall Account::deposit
+    PopParams 2
+    t10 = &acc
+    PushParam t10
+    t11 = LCall Account::getBalance
     PopParams 1
-    b = t8
-    Return acc.id
+    b = t11
+    t12 = &acc
+    t13 = *(t12 + 12)
+    Return t13
     EndFunc

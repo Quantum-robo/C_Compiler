@@ -20,14 +20,24 @@
 #include <set>
 #include "../ir/TAC.hpp"
 #include "../semantic/Types.hpp"
+#include "../semantic/Layout.hpp"
 
 extern int yylex();
 extern int yylineno;
 extern char* yytext;
 extern FILE* yyin;
+extern int colno;
+extern void yyrestart(FILE*);
+extern FILE* diag_out;                 // where diagnostics are written (muted during the first pass)
 
 void yyerror(const char* s);
 int has_error = 0;
+
+/* The program is read twice. The first pass only collects the layout of every struct, class and union
+   (a method may use members that are declared after it, and may use the size of its own class); the
+   second pass generates the code with the finished layouts. */
+static LayoutTable layoutBuild;        // filled while parsing
+static LayoutTable finalLayouts;       // layoutBuild at the end of the first pass
 
 /* ------------------------------------------------------------------
    Diagnostics
@@ -39,12 +49,12 @@ static int sem_warnings = 0;
 static void semError(const std::string& msg, int line = 0) {
     has_error = 1;
     ++sem_errors;
-    fprintf(stderr, "SEMANTIC ERROR: %s at line %d\n", msg.c_str(), line ? line : yylineno);
+    fprintf(diag_out, "SEMANTIC ERROR: %s at line %d\n", msg.c_str(), line ? line : yylineno);
 }
 
 static void semWarn(const std::string& msg, int line = 0) {
     ++sem_warnings;
-    fprintf(stderr, "WARNING: %s at line %d\n", msg.c_str(), line ? line : yylineno);
+    fprintf(diag_out, "WARNING: %s at line %d\n", msg.c_str(), line ? line : yylineno);
 }
 
 /* ------------------------------------------------------------------
@@ -59,6 +69,9 @@ struct Operand {
                                        // DEREF: the pointer being dereferenced
                                        // INDEX: the array / pointer base
     std::string index;                 // INDEX: flattened element index
+    int off = 0;                       // DEREF: constant byte offset added to the pointer (data member)
+    bool hasConst = false;             // names a const integer with a constant initializer (usable as an array size)
+    long constVal = 0;
     std::vector<std::string> dims;     // array dimensions (from the symbol table)
     size_t used = 0;                   // INDEX: subscripts applied so far
     // member access (for method calls)
@@ -195,6 +208,8 @@ static std::map<std::string, std::map<std::string, int> > memberAccess;
 static std::set<std::string> enumTags;
 static std::vector<DeclSpec*> spec_stack;
 static DeclSpec defaultSpec;
+static std::map<std::string, int> fnNameCount;       // locals declared so far in this function, by source name
+static std::map<std::string, int> staticNameCount;   // static locals declared so far, by IR name
 
 struct SwitchCtx {
     std::string value, test, end, def;
@@ -269,7 +284,7 @@ static std::string resolveName(const std::string& n) {
     return n;
 }
 
-static void beginAggr(const std::string& name, bool isClass) {
+static void beginAggr(const std::string& name, bool isClass, bool isUnion = false) {
     AggrFrame f;
     f.name = cur_aggr;
     f.memberCtx = in_member_ctx;
@@ -280,6 +295,7 @@ static void beginAggr(const std::string& name, bool isClass) {
     in_member_ctx = true;
     cur_access = isClass ? 2 : 0;      // class members default to private
     aggrMembers[name];
+    layoutBuild.beginAggr(name, isUnion, isClass);
 }
 
 // Names used inside method bodies that were not yet known when the body was
@@ -326,6 +342,56 @@ static bool isNumber(const std::string& s) {
     return true;
 }
 
+// Integer value of a constant: a decimal or hex literal (optionally negative) or a simple
+// character literal. Anything else (an expression the compiler did not fold) is "not constant".
+static bool parseConstInt(const std::string& p, long& v) {
+    if (p.size() >= 3 && p[0] == '\'' && p[p.size() - 1] == '\'') {
+        if (p.size() == 3) { v = (unsigned char)p[1]; return true; }
+        if (p.size() == 4 && p[1] == 92) {   // backslash escape
+            switch (p[2]) {
+                case 'n': v = 10; return true;
+                case 't': v = 9; return true;
+                case 'r': v = 13; return true;
+                case '0': v = 0; return true;
+                case 92: v = 92; return true;
+                case 39: v = 39; return true;
+            }
+        }
+        return false;
+    }
+    size_t i = (!p.empty() && p[0] == '-') ? 1 : 0;
+    bool hex = p.size() > i + 2 && p[i] == '0' && (p[i + 1] == 'x' || p[i + 1] == 'X');
+    if (hex) {
+        for (size_t k = i + 2; k < p.size(); ++k)
+            if (!isxdigit((unsigned char)p[k])) return false;
+    } else if (!isNumber(p)) {
+        return false;
+    }
+    v = strtol(p.c_str(), nullptr, hex ? 16 : 10);
+    return true;
+}
+
+static std::string numstr(long n) { return std::to_string(n); }
+
+// Text of an array dimension: a const integer variable counts as its value (const int N = 10; int a[N];).
+static std::string dimString(Operand* o);
+
+// Number of characters a string literal (with its quotes) denotes, without the terminating NUL.
+static long stringLength(const std::string& lit) {
+    long n = 0;
+    for (size_t i = 1; i + 1 < lit.size(); ++i, ++n) {
+        if (lit[i] != 92) continue;
+        ++i;
+        if (i + 1 >= lit.size()) break;
+        if (lit[i] == 'x') {
+            while (i + 2 < lit.size() && isxdigit((unsigned char)lit[i + 1])) ++i;
+        } else if (lit[i] >= '0' && lit[i] <= '7') {
+            for (int k = 0; k < 2 && i + 2 < lit.size() && lit[i + 1] >= '0' && lit[i + 1] <= '7'; ++k) ++i;
+        }
+    }
+    return n;
+}
+
 static Operand* valueOp(const std::string& place) {
     Operand* o = new Operand();
     o->place = place;
@@ -340,6 +406,48 @@ static Operand* typedOp(const std::string& place, const Type& ty) {
 
 static bool isZeroLit(const Operand* o) { return o->kind == Operand::VALUE && o->place == "0"; }
 
+/* ---- sizes (the layouts are complete during the second pass) ---- */
+
+// Bytes read or written when a value of this type is loaded or stored.
+static long accessSize(const Type& t) { return known(t) ? finalLayouts.valueSize(t) : 4; }
+
+// Size of one element of an array of this type (or of what a pointer of this type points to).
+static long elemBytes(const Type& t) { return known(t) ? finalLayouts.elemSize(t) : 4; }
+
+static Type addressType() { return makeType("void", 1); }
+
+// Constant array dimensions. A dimension that is not a constant integer is reported once;
+// an empty one (unsized parameter / extern array) is 0.
+static std::vector<long> numericDims(const std::vector<std::string>& dims, const std::string& name) {
+    std::vector<long> r;
+    for (size_t i = 0; i < dims.size(); ++i) {
+        long v = 0;
+        if (dims[i].empty()) {
+            r.push_back(0);
+        } else if (parseConstInt(dims[i], v)) {
+            r.push_back(v);
+        } else {
+            semError("size of array '" + name + "' is not a constant integer");
+            r.push_back(1);
+        }
+    }
+    return r;
+}
+
+// Bare member name inside a method: this->name. Offset and type come from the finished layout, so a
+// member declared further down the class body is handled like any other.
+static void makeThisMember(Operand* o, const std::string& n) {
+    o->kind = Operand::DEREF;
+    o->place = "this";
+    o->lvalue = true;
+    const FieldInfo* f = finalLayouts.field(cur_aggr, n);
+    if (!f) return;
+    o->off = (int)f->offset;
+    o->ty = f->ty;
+    o->dims.clear();
+    for (size_t i = 0; i < f->dims.size(); ++i) o->dims.push_back(numstr(f->dims[i]));
+}
+
 // An undeclared name is reported when it is actually used (a callee is exempt).
 // Inside a method it may be a member declared later in the class, so it is
 // assumed to be one and verified when the class ends.
@@ -347,7 +455,7 @@ static void use(Operand* o) {
     if (!o || !o->undeclared) return;
     o->undeclared = false;
     if (inMethod()) {
-        o->place = "this->" + o->name;
+        makeThisMember(o, o->name);
         PendingName p;
         p.cls = cur_aggr;
         p.name = o->name;
@@ -364,7 +472,7 @@ static std::string mulStr(const std::string& a, const std::string& b) {
     if (a == "1") return b;
     if (b == "1") return a;
     if (a == "0" || b == "0") return "0";
-    std::string t = tacGen.newTemp();
+    std::string t = tacGen.newTemp(makeType("int"));
     tacGen.emit("*", a, b, t);
     return t;
 }
@@ -373,7 +481,7 @@ static std::string addStr(const std::string& a, const std::string& b) {
     if (isNumber(a) && isNumber(b)) return std::to_string(std::stoll(a) + std::stoll(b));
     if (a == "0") return b;
     if (b == "0") return a;
-    std::string t = tacGen.newTemp();
+    std::string t = tacGen.newTemp(makeType("int"));
     tacGen.emit("+", a, b, t);
     return t;
 }
@@ -387,31 +495,62 @@ static std::string restStride(const std::vector<std::string>& dims, size_t from)
     return s;
 }
 
+// Bytes one step of pointer arithmetic moves for this operand: the size of the pointee, or of a
+// whole row for a multi-dimensional array.
+static long strideOf(const Operand* o) {
+    const Type& t = o->ty;
+    if (!known(t)) return 1;
+    long n;
+    if (t.arr > 0) {
+        n = finalLayouts.elemSize(t);
+        size_t start = (o->kind == Operand::INDEX) ? o->used : 0;
+        for (size_t k = start + 1; k < o->dims.size(); ++k) {
+            long d;
+            if (parseConstInt(o->dims[k], d)) n *= d;
+        }
+    } else {
+        n = (t.ptr == 1) ? finalLayouts.baseSize(t) : 4;
+    }
+    return n < 1 ? 1 : n;
+}
+
+static std::string addrOf(Operand* o);
+
 // Produce the value of an operand, emitting the load if it is still deferred.
 static std::string rval(Operand* o) {
     use(o);
     if (o->kind == Operand::VALUE) return o->place;
-    std::string t = tacGen.newTemp();
     if (o->kind == Operand::DEREF) {
-        tacGen.emit("deref", o->place, "", t);
-    } else if (o->used < totalDims(o)) {
-        // a sub-array (row) decays to its address
-        tacGen.emit("addridx", o->place, mulStr(o->index, restStride(o->dims, o->used)), t);
-    } else {
-        tacGen.emit("idxload", o->place, o->index, t);
+        if (o->ty.arr > 0) return addrOf(o);       // an array member decays to its address
+        std::string t = tacGen.newTemp(o->ty);
+        tacGen.emit("deref", o->place, "", t, (int)accessSize(o->ty), o->off);
+        return t;
     }
+    if (o->used < totalDims(o)) {
+        // a sub-array (row) decays to its address
+        std::string t = tacGen.newTemp(addressType());
+        tacGen.emit("addridx", o->place, mulStr(o->index, restStride(o->dims, o->used)), t, (int)elemBytes(o->ty));
+        return t;
+    }
+    std::string t = tacGen.newTemp(o->ty);
+    tacGen.emit("idxload", o->place, o->index, t, (int)accessSize(o->ty));
     return t;
 }
 
 static std::string addrOf(Operand* o) {
     use(o);
-    if (o->kind == Operand::DEREF) return o->place;
-    std::string t = tacGen.newTemp();
+    if (o->kind == Operand::DEREF) {
+        if (o->off == 0) return o->place;
+        std::string t = tacGen.newTemp(addressType());
+        tacGen.emit("+", o->place, numstr(o->off), t);
+        return t;
+    }
+    std::string t = tacGen.newTemp(addressType());
     if (o->kind == Operand::VALUE) {
         tacGen.emit("addr", o->place, "", t);
     } else {
         std::string idx = (o->used < totalDims(o)) ? mulStr(o->index, restStride(o->dims, o->used)) : o->index;
-        tacGen.emit("addridx", o->place, idx, t);
+        tacGen.emit("addridx", o->place, idx, t, (int)elemBytes(o->ty));
     }
     return t;
 }
@@ -419,8 +558,8 @@ static std::string addrOf(Operand* o) {
 static void store(Operand* lhs, const std::string& v) {
     use(lhs);
     if (lhs->kind == Operand::VALUE) tacGen.emit("=", v, "", lhs->place);
-    else if (lhs->kind == Operand::DEREF) tacGen.emit("store", v, "", lhs->place);
-    else tacGen.emit("idxstore", lhs->place, lhs->index, v);
+    else if (lhs->kind == Operand::DEREF) tacGen.emit("store", v, "", lhs->place, (int)accessSize(lhs->ty), lhs->off);
+    else tacGen.emit("idxstore", lhs->place, lhs->index, v, (int)accessSize(lhs->ty));
 }
 
 /* ---- type checks ---- */
@@ -449,6 +588,21 @@ static void checkModifiable(Operand* o, const std::string& what) {
     }
 }
 
+// Compile-time evaluation of an operator applied to two integer constants.
+static bool foldConst(const std::string& op, const std::string& l, const std::string& r, std::string& out) {
+    if (!isNumber(l) || !isNumber(r)) return false;
+    long long a = std::stoll(l), b = std::stoll(r), v;
+    if (op == "+") v = a + b;
+    else if (op == "-") v = a - b;
+    else if (op == "*") v = a * b;
+    else if (op == "/" && b != 0) v = a / b;
+    else if (op == "%" && b != 0) v = a % b;
+    else return false;
+    if (v > 2147483647LL || v < -2147483648LL) return false;
+    out = std::to_string(v);
+    return true;
+}
+
 static Operand* binop(const char* op, Operand* a, Operand* b) {
     std::string l = rval(a);
     std::string r = rval(b);
@@ -457,8 +611,36 @@ static Operand* binop(const char* op, Operand* a, Operand* b) {
         semError(std::string("invalid operands to binary '") + op + "' (have '" + typeName(a->ty) +
                  "' and '" + typeName(b->ty) + "')");
     if ((!strcmp(op, "/") || !strcmp(op, "%")) && isZeroLit(b)) semWarn("division by zero");
-    std::string t = tacGen.newTemp();
-    tacGen.emit(op, l, r, t);
+
+    std::string folded;
+    if (a->kind == Operand::VALUE && b->kind == Operand::VALUE && isArith(a->ty) && isArith(b->ty) &&
+        foldConst(op, l, r, folded))
+        return typedOp(folded, res);
+
+    std::string o = op;
+    bool pa = isPointerT(a->ty), pb = isPointerT(b->ty);
+    std::string t;
+    if ((o == "+" || o == "-") && pa != pb) {
+        // pointer +/- integer: the integer counts elements, the IR adds bytes
+        if (pa) r = mulStr(r, numstr(strideOf(a)));
+        else l = mulStr(l, numstr(strideOf(b)));
+        t = tacGen.newTemp(res);
+        tacGen.emit(op, l, r, t);
+    } else if (o == "-" && pa && pb) {
+        // pointer - pointer: the number of elements between them
+        long s = strideOf(a);
+        t = tacGen.newTemp(makeType("int"));
+        tacGen.emit("-", l, r, t);
+        if (s > 1) {
+            std::string q = tacGen.newTemp(makeType("int"));
+            tacGen.emit("/", t, numstr(s), q);
+            t = q;
+        }
+        res = makeType("int");
+    } else {
+        t = tacGen.newTemp(res);
+        tacGen.emit(op, l, r, t);
+    }
     return typedOp(t, res);
 }
 
@@ -466,7 +648,7 @@ static Operand* bitNot(Operand* a) {
     if (known(a->ty) && !isIntegral(a->ty))
         semError("wrong type argument to bit-complement (type '" + typeName(a->ty) + "')");
     std::string v = rval(a);
-    std::string t = tacGen.newTemp();
+    std::string t = tacGen.newTemp(makeType("int"));
     tacGen.emit("~", v, "", t);
     return typedOp(t, isIntegral(a->ty) ? makeType("int") : Type());
 }
@@ -475,7 +657,7 @@ static Operand* logNot(Operand* a) {
     if (known(a->ty) && !isScalar(a->ty))
         semError("wrong type argument to '!' (type '" + typeName(a->ty) + "')");
     std::string v = rval(a);
-    std::string t = tacGen.newTemp();
+    std::string t = tacGen.newTemp(makeType("int"));
     tacGen.emit("!", v, "", t);
     return typedOp(t, makeType("int"));
 }
@@ -489,7 +671,7 @@ static Operand* negate(Operand* a) {
         return typedOp(p[0] == '-' ? p.substr(1) : "-" + p, rt);
     }
     std::string v = rval(a);
-    std::string t = tacGen.newTemp();
+    std::string t = tacGen.newTemp(rt);
     tacGen.emit("uminus", v, "", t);
     return typedOp(t, rt);
 }
@@ -529,6 +711,12 @@ static Operand* addrOp(Operand* e) {
     return typedOp(addrOf(e), rt);
 }
 
+static std::string dimString(Operand* o) {
+    use(o);
+    if (o->kind == Operand::VALUE && o->hasConst) return numstr(o->constVal);
+    return rval(o);
+}
+
 static Operand* identOp(const std::string& n) {
     std::string place = resolveName(n);
     Operand* o = valueOp(place);
@@ -538,6 +726,7 @@ static Operand* identOp(const std::string& n) {
     if (s && place == s->mangled) {
         o->dims = s->dims;
         o->ty = s->ty;
+        if (s->hasValue && !s->isEnumConst) { o->hasConst = true; o->constVal = s->value; }
         o->lvalue = !s->isEnumConst;
         if (s->isEnumConst && s->hasValue) o->place = std::to_string(s->value);   // enumerators are compile-time numbers
         o->notCallable = !s->isFuncPtr && s->ptr == 0 && s->dims.empty();
@@ -545,11 +734,13 @@ static Operand* identOp(const std::string& n) {
         // is only dereferenced implicitly when it refers to a single object.
         if (s->isRef && s->dims.empty()) o->kind = Operand::DEREF;
     } else if (place.compare(0, 6, "this->") == 0) {
-        o->lvalue = true;
-        std::map<std::string, std::map<std::string, Type> >::iterator mt = aggrMemberTypes.find(cur_aggr);
-        if (mt != aggrMemberTypes.end()) {
-            std::map<std::string, Type>::iterator ft = mt->second.find(n);
-            if (ft != mt->second.end()) o->ty = ft->second;
+        makeThisMember(o, n);
+        if (!known(o->ty)) {
+            std::map<std::string, std::map<std::string, Type> >::iterator mt = aggrMemberTypes.find(cur_aggr);
+            if (mt != aggrMemberTypes.end()) {
+                std::map<std::string, Type>::iterator ft = mt->second.find(n);
+                if (ft != mt->second.end()) o->ty = ft->second;
+            }
         }
     } else if (funcSigs.count(n) || isBuiltinName(n) || (inMethod() && classMethods[cur_aggr].count(n))) {
         o->lvalue = true;                // a function or library name: type unknown
@@ -586,7 +777,7 @@ static Operand* subscript(Operand* base, Operand* idxOp) {
         r->index = addStr(mulStr(base->index, base->dims[k]), idx);
         return r;
     }
-    if (base->kind == Operand::VALUE) r->dims = base->dims;
+    if (base->kind == Operand::VALUE || (base->kind == Operand::DEREF && base->ty.arr > 0)) r->dims = base->dims;
     r->place = rval(base);
     r->used = 1;
     r->index = idx;
@@ -600,6 +791,8 @@ static int accessOf(const std::string& cls, const std::string& m) {
     return jt == it->second.end() ? 0 : jt->second;
 }
 
+// obj.m / ptr->m. A data member becomes a deferred access at a constant byte offset from the
+// object's address; a method stays a callee description that makeCall turns into a call.
 static Operand* member(Operand* base, const std::string& m, bool arrow) {
     use(base);
     Operand* r = new Operand();
@@ -622,9 +815,10 @@ static Operand* member(Operand* base, const std::string& m, bool arrow) {
     }
 
     Type mty;
+    bool method = false;
     if (!cls.empty() && aggrMembers.count(cls)) {
         bool field = isMemberOf(cls, m);
-        bool method = classMethods[cls].count(m) > 0;
+        method = classMethods[cls].count(m) > 0;
         bool inside = inMethod() && cur_aggr == cls;
         if (!field && !method) {
             if (!inside) semError("'" + cls + "' has no member named '" + m + "'");
@@ -644,19 +838,37 @@ static Operand* member(Operand* base, const std::string& m, bool arrow) {
     r->lvalue = arrow ? true : base->lvalue;
 
     if (arrow) {
+        // the pointer is read now; for a method call it is the object pointer passed as 'this'
         std::string p = rval(base);
-        r->place = p + "->" + m;
+        r->place = p;
         r->objOp = valueOp(p);
         r->objOp->ty = base->ty;
-    } else if (base->kind == Operand::DEREF) {
-        r->place = base->place + "->" + m;
-        r->objOp = base;
-    } else if (base->kind == Operand::INDEX) {
-        r->place = base->place + "[" + base->index + "]." + m;
-        r->objOp = base;
     } else {
-        r->place = base->place + "." + m;
         r->objOp = base;
+    }
+
+    const FieldInfo* f = (!cls.empty() && !method) ? finalLayouts.field(cls, m) : nullptr;
+    if (f) {
+        std::string ptr;
+        int baseOff = 0;
+        if (arrow) {
+            ptr = r->place;
+        } else if (base->kind == Operand::DEREF) {
+            ptr = base->place;                    // object reached through a pointer or reference
+            baseOff = base->off;
+        } else {
+            ptr = addrOf(base);                   // named object or array element: take its address
+        }
+        r->kind = Operand::DEREF;
+        r->place = ptr;
+        r->off = baseOff + (int)f->offset;
+        if (!known(r->ty)) {
+            r->ty = f->ty;
+            if (r->ty.cb == false && bt.cb) r->ty.cb = true;
+        }
+        for (size_t i = 0; i < f->dims.size(); ++i) r->dims.push_back(numstr(f->dims[i]));
+    } else if (!method) {
+        r->place.clear();
     }
     return r;
 }
@@ -707,7 +919,7 @@ static bool isLiteralPlace(const std::string& p) {
 // into a temporary first (const int &r = 5).
 static std::string refTarget(Operand* o) {
     if (o->kind == Operand::VALUE && isLiteralPlace(o->place)) {
-        std::string t = tacGen.newTemp();
+        std::string t = tacGen.newTemp(o->ty);
         tacGen.emit("=", o->place, "", t);
         return addrOf(valueOp(t));
     }
@@ -782,7 +994,8 @@ static Operand* makeCall(Operand* f, const std::vector<std::string>& args) {
 
     for (size_t i = args.size(); i-- > 0;) tacGen.emit("param", args[i], "", "");
     if (method) tacGen.emit("param", thisArg, "", "");
-    std::string t = tacGen.newTemp();
+    // the result of a function returning T& is an address; a library function's result type is unknown (int)
+    std::string t = tacGen.newTemp(sig ? (sig->returnsRef ? addressType() : sig->ret) : Type());
     tacGen.emit("call", target, std::to_string(args.size() + (method ? 1 : 0)), t);
     Operand* result = valueOp(t);
     result->isCall = true;
@@ -828,11 +1041,14 @@ static void checkIncDec(Operand* o) {
         semError("wrong type argument to increment/decrement (type '" + typeName(o->ty) + "')");
 }
 
+// ++ and -- move a pointer by one element, not one byte
+static std::string incStep(Operand* o) { return isPointerT(o->ty) ? numstr(strideOf(o)) : "1"; }
+
 static Operand* preIncDec(Operand* o, const char* op) {
     checkIncDec(o);
     std::string cur = rval(o);
-    std::string t = tacGen.newTemp();
-    tacGen.emit(op, cur, "1", t);
+    std::string t = tacGen.newTemp(o->ty);
+    tacGen.emit(op, cur, incStep(o), t);
     store(o, t);
     return o->kind == Operand::VALUE ? o : typedOp(t, o->ty);
 }
@@ -841,13 +1057,13 @@ static Operand* postIncDec(Operand* o, const char* op) {
     checkIncDec(o);
     std::string old;
     if (o->kind == Operand::VALUE) {
-        old = tacGen.newTemp();
+        old = tacGen.newTemp(o->ty);
         tacGen.emit("=", o->place, "", old);
     } else {
         old = rval(o);
     }
-    std::string nv = tacGen.newTemp();
-    tacGen.emit(op, o->kind == Operand::VALUE ? o->place : old, "1", nv);
+    std::string nv = tacGen.newTemp(o->ty);
+    tacGen.emit(op, o->kind == Operand::VALUE ? o->place : old, incStep(o), nv);
     store(o, nv);
     return typedOp(old, o->ty);
 }
@@ -873,7 +1089,9 @@ static Operand* assign(Operand* lhs, const std::string& op, Operand* rhs) {
     std::string v = rval(rhs);
     if (!bop.empty()) {
         std::string cur = rval(lhs);
-        std::string t = tacGen.newTemp();
+        if ((bop == "+" || bop == "-") && isPointerT(lhs->ty) && !isPointerT(rhs->ty))
+            v = mulStr(v, numstr(strideOf(lhs)));          // p += n moves n elements
+        std::string t = tacGen.newTemp(lhs->ty);
         tacGen.emit(bop, cur, v, t);
         v = t;
     }
@@ -905,18 +1123,33 @@ static long long prodDims(const std::vector<std::string>& dims, size_t from) {
     return p;
 }
 
+// Copy a string literal into the character array whose address is 'dst'.
+static void emitStrcpy(const std::string& dst, const std::string& lit) {
+    tacGen.emit("param", lit, "", "");
+    tacGen.emit("param", dst, "", "");
+    tacGen.emit("call", "strcpy", "2", "");
+}
+
 // Flatten a (possibly nested) brace initializer into per-element stores.
+// 'esz' is the size in bytes of one array element.
 static void emitInitList(const std::string& base, const std::vector<std::string>& dims,
-                         InitNode* n, size_t level, long long off) {
+                         InitNode* n, size_t level, long long off, int esz) {
     long long stride = prodDims(dims, level + 1);
     for (size_t i = 0; i < n->items.size(); ++i) {
         InitNode* c = n->items[i];
         if (c->isList) {
-            emitInitList(base, dims, c, level + 1, off + (long long)i * stride);
+            emitInitList(base, dims, c, level + 1, off + (long long)i * stride, esz);
         } else {
             bool strLeaf = !c->value.empty() && c->value[0] == '"' && level + 1 < dims.size();
             long long idx = strLeaf ? off + (long long)i * stride : off + (long long)i;
-            tacGen.emit("idxstore", base, std::to_string(idx), c->value);
+            if (strLeaf) {
+                // "ab" initialises a whole row of a character array
+                std::string row = tacGen.newTemp(addressType());
+                tacGen.emit("addridx", base, std::to_string(idx), row, esz);
+                emitStrcpy(row, c->value);
+            } else {
+                tacGen.emit("idxstore", base, std::to_string(idx), c->value, esz);
+            }
         }
     }
 }
@@ -935,19 +1168,44 @@ static void finalizeLeaf(InitNode* n) {
 static void emitInitial(const std::string& target, const Symbol& sym, InitNode* init) {
     if (!init->isList) {
         finalizeLeaf(init);
-        tacGen.emit("=", init->value, "", target);
+        if (init->isStr && sym.ty.arr > 0 && sym.ty.base == "char" && !sym.ty.aggr && sym.ty.ptr == 0) {
+            // char s[] = "text": copy the characters into the array
+            if (!tacGen.inGlobalContext()) {
+                long total = finalLayouts.objectSize(sym.ty, numericDims(sym.dims, ""));
+                if (total > 0) tacGen.emit("zero", target, "", "", (int)total);   // the rest of the array is zero
+            }
+            std::string a = tacGen.newTemp(addressType());
+            tacGen.emit("addr", target, "", a);
+            emitStrcpy(a, init->value);
+        } else {
+            tacGen.emit("=", init->value, "", target);
+        }
         return;
     }
+    // elements not named in a brace initializer are zero (the data segment already is)
+    bool local = !tacGen.inGlobalContext();
     if (sym.dims.empty()) {
-        std::map<std::string, std::vector<std::string> >::iterator it = aggrMembers.find(sym.ty.base);
-        if (it != aggrMembers.end()) {
-            for (size_t i = 0; i < init->items.size() && i < it->second.size(); ++i)
+        const AggrLayout* al = finalLayouts.find(sym.ty.base);
+        if (sym.ty.aggr && sym.ty.ptr == 0 && al) {
+            // struct / class / union: one value per member, in declaration order (a union sets its first)
+            if (local) tacGen.emit("zero", target, "", "", (int)al->size);
+            std::string a = tacGen.newTemp(addressType());
+            tacGen.emit("addr", target, "", a);
+            size_t n = al->isUnion ? 1 : al->fields.size();
+            for (size_t i = 0; i < init->items.size() && i < n; ++i)
                 if (!init->items[i]->isList)
-                    tacGen.emit("=", init->items[i]->value, "", target + "." + it->second[i]);
-            return;
+                    tacGen.emit("store", init->items[i]->value, "", a,
+                                (int)accessSize(al->fields[i].ty), (int)al->fields[i].offset);
+        } else if (!init->items.empty() && !init->items[0]->isList) {
+            tacGen.emit("=", init->items[0]->value, "", target);   // int x = { 5 };
         }
+        return;
     }
-    emitInitList(target, sym.dims, init, 0, 0);
+    if (local) {
+        long total = finalLayouts.objectSize(sym.ty, numericDims(sym.dims, ""));
+        if (total > 0) tacGen.emit("zero", target, "", "", (int)total);
+    }
+    emitInitList(target, sym.dims, init, 0, 0, (int)elemBytes(sym.ty));
 }
 
 // Type-check every scalar leaf of a brace initializer against the element type.
@@ -999,6 +1257,16 @@ static void recordSignature(const std::string& name, Declarator* d, DeclSpec* sp
     funcSigs[name] = sig;
 }
 
+// Every local gets a name that is unique inside its function, so that the code generator can give
+// each variable its own slot: a second 'i' in a sibling block becomes i.2, and a local that shadows
+// a global is renamed too, because the function may still use the global elsewhere.
+static std::string uniqueLocal(const std::string& n) {
+    int& count = fnNameCount[n];
+    bool clash = count > 0 || scopes[0].count(n) > 0;
+    ++count;
+    return clash ? n + "." + std::to_string(count) : n;
+}
+
 static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
     if (sp->isTypedef) return;
     bool member = !cur_aggr.empty() && in_member_ctx;
@@ -1025,11 +1293,19 @@ static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
         if (isNumber(d->dims[i]) && std::stoll(d->dims[i]) < 0)
             semError("size of array '" + d->name + "' is negative");
 
+    // an unsized first dimension is taken from the initializer: int a[] = {1, 2}; char s[] = "ab";
+    if (init && !d->dims.empty() && d->dims[0].empty()) {
+        if (init->isList) d->dims[0] = std::to_string(init->items.size());
+        else if (init->op && init->op->isStr && d->dims.size() == 1)
+            d->dims[0] = std::to_string(stringLength(init->op->place) + 1);
+    }
+
     if (member) {
         if (isMemberOf(cur_aggr, d->name)) semError("duplicate member '" + d->name + "'");
         aggrMembers[cur_aggr].push_back(d->name);
         aggrMemberTypes[cur_aggr][d->name] = ty;
         memberAccess[cur_aggr][d->name] = cur_access;
+        layoutBuild.addField(cur_aggr, d->name, ty, numericDims(d->dims, d->name));
         return;
     }
 
@@ -1041,9 +1317,32 @@ static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
     s.ptr = d->ptr;
     s.isFuncPtr = d->isFuncPtr;
     s.isExtern = sp->isExtern;
+    if (sp->isConst && isIntegral(ty) && ty.ptr == 0 && !d->isRef && init && !init->isList && init->op &&
+        init->op->kind == Operand::VALUE) {
+        long cv;
+        if (init->op->hasConst) { s.hasValue = true; s.value = init->op->constVal; }
+        else if (parseConstInt(init->op->place, cv)) { s.hasValue = true; s.value = cv; }
+    }
     bool staticLocal = sp->isStatic && in_func;
-    if (staticLocal) s.mangled = cur_func + "." + d->name;
+    if (staticLocal) {
+        std::string base = cur_func + "." + d->name;
+        int k = ++staticNameCount[base];
+        s.mangled = k > 1 ? base + "." + std::to_string(k) : base;
+    } else if (in_func) {
+        s.mangled = uniqueLocal(d->name);
+    }
     declareSym(d->name, s);
+
+    // tell the code generator about the variable
+    VarInfo vi;
+    vi.name = s.mangled;
+    vi.ty = known(ty) ? ty : addressType();          // a function pointer is a plain address
+    vi.dims = numericDims(d->dims, d->name);
+    vi.isRef = d->isRef;
+    vi.isStatic = sp->isStatic;
+    vi.isGlobal = !in_func || staticLocal;
+    vi.isExtern = sp->isExtern;
+    tacGen.declareVar(vi);
 
     if (init) {
         // initializer type checks (the leaf is still unevaluated here)
@@ -1099,10 +1398,32 @@ static void beginFunction(Declarator* d) {
     in_func = true;
     fn_labels.clear();
     fn_gotos.clear();
+    fnNameCount.clear();
     pushScope();
+
+    FuncInfo fi;
+    fi.name = cur_func;
+    fi.isMethod = isMethod;
+    fi.returnsRef = d->isRef;
+    fi.ret = typeFromName(sp->type, d->ptr, 0, sp->isConst);
+    if (isMethod) {                                  // the object pointer is the first parameter
+        VarInfo self;
+        self.name = "this";
+        self.ty = makeType(cur_aggr, 1, 0, true);
+        self.isParam = true;
+        fi.params.push_back(self);
+    }
     for (size_t i = 0; i < d->params.size(); ++i) {
         const Param& p = d->params[i];
+        VarInfo v;
+        v.name = p.name.empty() ? "_arg" + std::to_string(i) : p.name;
+        v.ty = (p.isFuncPtr || !known(p.ty)) ? addressType() : p.ty;
+        v.dims = numericDims(p.dims, p.name);
+        v.isRef = p.isRef;
+        v.isParam = true;
+        fi.params.push_back(v);
         if (p.name.empty()) continue;
+        fnNameCount[p.name] = 1;
         Symbol s;
         s.ty = p.ty;
         s.dims = p.dims;
@@ -1112,6 +1433,7 @@ static void beginFunction(Declarator* d) {
         s.isFuncPtr = p.isFuncPtr;
         declareSym(p.name, s);
     }
+    tacGen.beginFunction(fi);
     recordSignature(cur_func, d, sp, true);
     cur_returns_ref = d->isRef;
     cur_ret = typeFromName(sp->type, d->ptr, 0, sp->isConst);
@@ -1139,36 +1461,9 @@ static void applyStorage(DeclSpec* s, const std::string& sc) {
     else if (sc == "extern") s->isExtern = true;
 }
 
-// Integer value of a constant operand: a decimal or hex literal (optionally negative) or a
-// simple character literal. Anything else (an expression the compiler did not fold) is
-// reported as "not constant".
+// Integer value of a constant operand (see parseConstInt).
 static bool constIntValue(const Operand* o, long& v) {
-    if (o->kind != Operand::VALUE) return false;
-    const std::string& p = o->place;
-    if (p.size() >= 3 && p[0] == '\'' && p[p.size() - 1] == '\'') {
-        if (p.size() == 3) { v = (unsigned char)p[1]; return true; }
-        if (p.size() == 4 && p[1] == 92) {   // backslash escape
-            switch (p[2]) {
-                case 'n': v = 10; return true;
-                case 't': v = 9; return true;
-                case 'r': v = 13; return true;
-                case '0': v = 0; return true;
-                case 92: v = 92; return true;
-                case 39: v = 39; return true;
-            }
-        }
-        return false;
-    }
-    size_t i = (!p.empty() && p[0] == '-') ? 1 : 0;
-    bool hex = p.size() > i + 2 && p[i] == '0' && (p[i + 1] == 'x' || p[i + 1] == 'X');
-    if (hex) {
-        for (size_t k = i + 2; k < p.size(); ++k)
-            if (!isxdigit((unsigned char)p[k])) return false;
-    } else if (!isNumber(p)) {
-        return false;
-    }
-    v = strtol(p.c_str(), nullptr, hex ? 16 : 10);
-    return true;
+    return o->kind == Operand::VALUE && parseConstInt(o->place, v);
 }
 
 // Enumerator values: NAME takes the previous value + 1, NAME = expr takes expr.
@@ -1354,12 +1649,98 @@ static void endSwitch() {
     tacGen.emit("goto", "", "", c.end);
     tacGen.emit("label", "", "", c.test);
     for (size_t i = 0; i < c.cases.size(); ++i) {
-        std::string t = tacGen.newTemp();
+        std::string t = tacGen.newTemp(makeType("int"));
         tacGen.emit("==", c.value, c.cases[i].first, t);
         tacGen.emit("if", t, "", c.cases[i].second);
     }
     tacGen.emit("goto", "", "", c.def.empty() ? c.end : c.def);
     tacGen.emit("label", "", "", c.end);
+}
+
+/* ------------------------------------------------------------------
+   sizeof / new / delete
+   ------------------------------------------------------------------ */
+
+// sizeof expr: the operand is not evaluated, so its size comes from its type alone.
+static long sizeOfOperand(Operand* o) {
+    if (!known(o->ty)) return 4;
+    if (o->ty.arr > 0) {
+        // an array parameter with an unsized first dimension is really a pointer
+        if (o->kind == Operand::VALUE && !o->dims.empty() && o->dims[0].empty()) return 4;
+        size_t start = (o->kind == Operand::INDEX) ? o->used : 0;
+        long n = finalLayouts.elemSize(o->ty);
+        for (size_t k = start; k < o->dims.size(); ++k) {
+            long d;
+            if (parseConstInt(o->dims[k], d)) n *= d;
+        }
+        return n;
+    }
+    return accessSize(o->ty);
+}
+
+// new T / new T[n] become a call to malloc; delete / delete[] a call to free.
+static Operand* newObject(const std::string& typeName_, Operand* count) {
+    Type elem = typeFromName(typeName_, 0, 0, false);
+    long size = finalLayouts.baseSize(elem);
+    if (elem.aggr && size == 0) semError("invalid use of incomplete type '" + elem.base + "'");
+    std::string bytes = numstr(size);
+    if (count) {
+        if (known(count->ty) && !isIntegral(count->ty)) semError("size in new-expression must be an integer");
+        bytes = mulStr(rval(count), numstr(size));
+    }
+    tacGen.emit("param", bytes, "", "");
+    Type pt = typeFromName(typeName_, 1, 0, false);
+    std::string t = tacGen.newTemp(pt);
+    tacGen.emit("call", "malloc", "1", t);
+    return typedOp(t, pt);
+}
+
+static void deleteObject(const std::string& ptr) {
+    tacGen.emit("param", ptr, "", "");
+    tacGen.emit("call", "free", "1", "");
+}
+
+// Forget everything the parser learned, so that the program can be read again.
+// (finalLayouts is kept: it is the result of the first pass.)
+static void resetState() {
+    scopes.assign(1, std::map<std::string, Symbol>());
+    cur_func.clear();
+    cur_aggr.clear();
+    in_func = false;
+    in_member_ctx = false;
+    saved_member_ctx = false;
+    cur_access = 0;
+    aggr_stack.clear();
+    pendingNames.clear();
+    classMethods.clear();
+    aggrMembers.clear();
+    aggrMemberTypes.clear();
+    memberAccess.clear();
+    enumTags.clear();
+    spec_stack.clear();
+    defaultSpec = DeclSpec();
+    switch_stack.clear();
+    loop_stack.clear();
+    label_stack = std::stack<std::string>();
+    break_stack = std::stack<std::string>();
+    continue_stack = std::stack<std::string>();
+    arg_stack = std::stack<CallFrame>();
+    funcSigs.clear();
+    calledBeforeDecl.clear();
+    implicitWarned.clear();
+    cur_returns_ref = false;
+    cur_ret = Type();
+    fn_labels.clear();
+    fn_gotos.clear();
+    enum_next = 0;
+    enum_next_known = true;
+    fnNameCount.clear();
+    staticNameCount.clear();
+    sem_errors = 0;
+    sem_warnings = 0;
+    has_error = 0;
+    tacGen.reset();
+    layoutBuild.clear();
 }
 
 %}
@@ -1472,7 +1853,7 @@ struct_definition
     ;
 
 union_definition
-    : KW_UNION IDENTIFIER { beginAggr($2, false); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
+    : KW_UNION IDENTIFIER { beginAggr($2, false, true); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
     ;
 
 enum_definition
@@ -1648,7 +2029,7 @@ direct_declarator
     }
     | direct_declarator LEFT_BRACKET expression_opt RIGHT_BRACKET {
         $$ = $1;
-        $$->dims.push_back(rval($3));
+        $$->dims.push_back(dimString($3));
     }
     | direct_declarator LEFT_PAREN parameter_list_opt RIGHT_PAREN {
         $$ = $1;
@@ -1752,7 +2133,7 @@ statement
 labeled_statement
     : IDENTIFIER COLON {
         defineLabel($1);
-        tacGen.emit("label", "", "", $1);
+        tacGen.emit("label", "user", "", $1);
     } statement
     | KW_CASE conditional_expression COLON {
         addCase($2);
@@ -1820,7 +2201,7 @@ iteration_statement
 jump_statement
     : KW_GOTO IDENTIFIER SEMICOLON {
         fn_gotos.push_back(std::make_pair(std::string($2), yylineno));
-        tacGen.emit("goto", "", "", $2);
+        tacGen.emit("goto", "user", "", $2);
     }
     | KW_BREAK SEMICOLON {
         if (break_stack.empty()) semError("break statement not within a loop or switch");
@@ -1878,7 +2259,7 @@ conditional_expression
         Ctx* c = new Ctx();
         checkCondition($1);
         std::string cond = rval($1);
-        c->a = tacGen.newTemp();
+        c->a = tacGen.newTemp(makeType("int"));
         c->b = tacGen.newLabel();
         c->c = tacGen.newLabel();
         tacGen.emit("ifFalse", cond, "", c->b);
@@ -1892,7 +2273,9 @@ conditional_expression
         Ctx* c = $<ctx>3;
         tacGen.emit("=", rval($7), "", c->a);
         tacGen.emit("label", "", "", c->c);
-        $$ = typedOp(c->a, commonType($4, $7));
+        Type ct = commonType($4, $7);
+        tacGen.setTempType(c->a, ct);
+        $$ = typedOp(c->a, ct);
     }
     ;
 
@@ -1910,7 +2293,7 @@ logical_or_expression
         Ctx* c = $<ctx>3;
         checkCondition($4);
         std::string v = rval($4);
-        std::string t = tacGen.newTemp();
+        std::string t = tacGen.newTemp(makeType("int"));
         std::string end_label = tacGen.newLabel();
         tacGen.emit("if", v, "", c->b);
         tacGen.emit("=", "0", "", t);
@@ -1935,7 +2318,7 @@ logical_and_expression
         Ctx* c = $<ctx>3;
         checkCondition($4);
         std::string v = rval($4);
-        std::string t = tacGen.newTemp();
+        std::string t = tacGen.newTemp(makeType("int"));
         std::string end_label = tacGen.newLabel();
         tacGen.emit("ifFalse", v, "", c->b);
         tacGen.emit("=", "1", "", t);
@@ -2006,41 +2389,28 @@ unary_expression
     | BITWISE_NOT unary_expression { $$ = bitNot($2); }
     | LOGICAL_NOT unary_expression { $$ = logNot($2); }
     | KW_SIZEOF unary_expression {
-        // sizeof does not evaluate its operand, so no load is emitted for it
+        // sizeof does not evaluate its operand: the size is a compile-time constant
         use($2);
-        std::string v;
-        if ($2->kind == Operand::DEREF) v = "*" + $2->place;
-        else if ($2->kind == Operand::INDEX && $2->used >= totalDims($2)) v = $2->place + "[" + $2->index + "]";
-        else v = rval($2);
-        std::string t = tacGen.newTemp();
-        tacGen.emit("sizeof", v, "", t);
-        $$ = typedOp(t, makeType("int"));
+        $$ = typedOp(numstr(sizeOfOperand($2)), makeType("int"));
     }
     | KW_SIZEOF LEFT_PAREN type_specifier pointer_opt RIGHT_PAREN {
-        std::string t = tacGen.newTemp();
-        tacGen.emit("sizeof", $3, "", t);
-        $$ = typedOp(t, makeType("int"));
+        long n = ($4 >> 1) > 0 ? 4 : finalLayouts.baseSize(typeFromName($3, 0, 0, false));
+        $$ = typedOp(numstr(n), makeType("int"));
     }
     | KW_NEW type_specifier {
-        std::string t = tacGen.newTemp();
-        tacGen.emit("new", $2, "", t);
-        $$ = typedOp(t, typeFromName($2, 1, 0, false));
+        $$ = newObject($2, nullptr);
     }
     | KW_NEW type_specifier LEFT_BRACKET expression RIGHT_BRACKET {
-        if (known($4->ty) && !isIntegral($4->ty)) semError("size in new-expression must be an integer");
-        std::string n = rval($4);
-        std::string t = tacGen.newTemp();
-        tacGen.emit("newarr", $2, n, t);
-        $$ = typedOp(t, typeFromName($2, 1, 0, false));
+        $$ = newObject($2, $4);
     }
     | KW_DELETE unary_expression {
         if (known($2->ty) && levels($2->ty) == 0) semError("type argument of 'delete' is not a pointer");
-        tacGen.emit("delete", rval($2), "", "");
+        deleteObject(rval($2));
         $$ = typedOp("", makeType("void"));
     }
     | KW_DELETE LEFT_BRACKET RIGHT_BRACKET unary_expression {
         if (known($4->ty) && levels($4->ty) == 0) semError("type argument of 'delete[]' is not a pointer");
-        tacGen.emit("deletearr", rval($4), "", "");
+        deleteObject(rval($4));
         $$ = typedOp("", makeType("void"));
     }
     ;
@@ -2109,26 +2479,50 @@ string_literal
 
 void yyerror(const char* s) {
     has_error = 1;
-    fprintf(stderr, "SYNTAX ERROR: %s at line %d (near '%s')\n", s, yylineno, yytext);
+    fprintf(diag_out, "SYNTAX ERROR: %s at line %d (near '%s')\n", s, yylineno, yytext);
+}
+
+// Read the whole program once; the layouts, the symbol tables and the IR are rebuilt from scratch.
+static int runPass(FILE* input) {
+    resetState();
+    rewind(input);
+    yyrestart(input);
+    yylineno = 1;
+    colno = 1;
+    return yyparse();
 }
 
 int main(int argc, char** argv) {
     std::string input_path = "";
     std::string output_path = "";
+    bool withTables = false;
 
-    if (argc > 1) {
-        input_path = argv[1];
-        FILE* file = fopen(input_path.c_str(), "r");
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--tables") withTables = true;            // also write the layouts and symbol tables
+        else if (input_path.empty()) input_path = a;
+        else if (output_path.empty()) output_path = a;
+    }
+
+    FILE* file = nullptr;
+    if (!input_path.empty()) {
+        file = fopen(input_path.c_str(), "r");
         if (!file) {
             perror("Error opening file");
             return 1;
         }
-        yyin = file;
+    } else {
+        // the program is read twice and standard input cannot be rewound: copy it to a scratch file
+        file = tmpfile();
+        if (!file) {
+            perror("Error creating scratch file");
+            return 1;
+        }
+        int c;
+        while ((c = getchar()) != EOF) fputc(c, file);
     }
 
-    if (argc > 2) {
-        output_path = argv[2];
-    } else if (!input_path.empty()) {
+    if (output_path.empty() && !input_path.empty()) {
         // Default naming convention: replace .c extension with .tac
         size_t dot_pos = input_path.find_last_of('.');
         if (dot_pos != std::string::npos) {
@@ -2138,15 +2532,28 @@ int main(int argc, char** argv) {
         }
     }
 
-    int res = yyparse();
+    // Pass 1: collect the layout of every struct / class / union. Diagnostics are discarded here;
+    // the second pass reports them.
+    finalLayouts.clear();
+    FILE* scratch = tmpfile();
+    if (scratch) diag_out = scratch;
+    runPass(file);
+    finalLayouts = layoutBuild;
+    finalLayouts.finalize();
+    diag_out = stderr;
+    if (scratch) fclose(scratch);
+
+    // Pass 2: the real compilation, with every layout known.
+    int res = runPass(file);
 
     if (res == 0 && !has_error) {
         printf("\n=> PARSE SUCCESSFUL: No syntax errors found.\n");
         printf("=> SEMANTIC CHECK PASSED: %d warning(s).\n", sem_warnings);
         tacGen.printTAC(stdout);
+        if (withTables) tacGen.printTables(stdout, finalLayouts);
 
         if (!output_path.empty()) {
-            if (tacGen.saveTAC(output_path)) {
+            if (tacGen.saveTAC(output_path, withTables, finalLayouts)) {
                 printf("\n=> IR saved to: %s\n", output_path.c_str());
             }
         }

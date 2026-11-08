@@ -56,6 +56,7 @@ L4:
 
 main:
     BeginFunc
+    Zero data :20
     data[0] = 5
     data[1] = 1
     data[2] = 4
@@ -65,32 +66,38 @@ main:
     PushParam data
     t20 = LCall sort
     PopParams 2
-    t21 = data[0]
-    s.min = t21
-    t22 = data[4]
-    s.max = t22
+    t21 = &s
+    t22 = data[0]
+    *t21 = t22
+    t23 = &s
+    t24 = data[4]
+    *(t23 + 4) = t24
     i = 0
 L10:
-    t23 = i < 5
-    IfFalse t23 Goto L13
+    t25 = i < 5
+    IfFalse t25 Goto L13
     Goto L11
 L12:
-    t24 = i
-    t25 = i + 1
-    i = t25
+    t26 = i
+    t27 = i + 1
+    i = t27
     Goto L10
 L11:
-    t26 = data[i]
-    PushParam t26
+    t28 = data[i]
+    PushParam t28
     PushParam "%d "
-    t27 = LCall printf
+    t29 = LCall printf
     PopParams 2
     Goto L12
 L13:
-    PushParam s.max
-    PushParam s.min
+    t30 = &s
+    t31 = *t30
+    t32 = &s
+    t33 = *(t32 + 4)
+    PushParam t33
+    PushParam t31
     PushParam "\nmin=%d max=%d\n"
-    t28 = LCall printf
+    t34 = LCall printf
     PopParams 3
     Return 0
     EndFunc

@@ -1,34 +1,38 @@
 
 Counter::increment:
     BeginFunc
-    t1 = this->value + 1
-    this->value = t1
+    t1 = *this
+    t2 = t1 + 1
+    *this = t2
     EndFunc
 
 Counter::get:
     BeginFunc
-    Return this->value
+    t3 = *this
+    Return t3
     EndFunc
 
 main:
     BeginFunc
-    c.value = 0
-    t2 = &c
-    PushParam t2
-    t3 = LCall Counter::increment
-    PopParams 1
     t4 = &c
-    PushParam t4
-    t5 = LCall Counter::increment
+    *t4 = 0
+    t5 = &c
+    PushParam t5
+    t6 = LCall Counter::increment
     PopParams 1
-    t6 = &c
-    PushParam t6
-    t7 = LCall Counter::get
+    t7 = &c
+    PushParam t7
+    t8 = LCall Counter::increment
     PopParams 1
-    v = t7
-    t8 = &c
-    pc = t8
-    t9 = v * 10
-    pc->value = t9
-    Return pc->value
+    t9 = &c
+    PushParam t9
+    t10 = LCall Counter::get
+    PopParams 1
+    v = t10
+    t11 = &c
+    pc = t11
+    t12 = v * 10
+    *pc = t12
+    t13 = *pc
+    Return t13
     EndFunc
