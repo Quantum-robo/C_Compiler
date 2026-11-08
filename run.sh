@@ -1,36 +1,45 @@
 #!/bin/bash
-# Runs the compiler over every test case in tests/.
+# Runs the compiler over every test case.
 #
-#   ./run.sh <file.c | folder>        print the IR of that file, or of every .c file in the folder
-#                                     and saves each as ./<name>.TAC (run 'make' first)
-#   ./run.sh --test <executable>      run the regression suite, e.g.  ./run.sh --test ./parser
-#   ./run.sh --update <executable>    re-bless the expected IR (only after reviewing it)
+#   ./run.sh <file.c | folder>               print the IR of that file, or of every .c file in the
+#                                            folder and save each as ./<name>.TAC (run 'make' first)
+#   ./run.sh --test <executable>             run the suite in tests/, e.g.  ./run.sh --test ./parser
+#   ./run.sh --archived <executable>         run the archived front-end suite (archived_tests/25_OCT)
+#   ./run.sh --update --archived <exe>       re-bless the archived expected IR (only after review)
 #
-# Test layout:
+# Layout of tests/ (default run):
 #   tests/parser/*.c                       syntax tests; a name containing "_invalid" must be rejected
-#   tests/25_OCT/*.c                       one program per language feature; the generated IR must
-#                                          equal tests/25_OCT/expected/<name>.tac
-#   tests/25_OCT/semantic_errors/err_*.c   must be rejected; stderr must contain the text after
-#                                          "// EXPECT:" on the first line
-#   tests/25_OCT/semantic_errors/warn_*.c  must be accepted, with that warning
-#   tests/25_OCT/semantic_valid/ok_*.c     must be accepted with no diagnostics at all
 #   tests/semantic/*.c                     must compile (IR is generated but not compared)
 #
-# Related make targets: make check (this script), make test-parser, make test-semantic, make ir.
+# Layout of archived_tests/25_OCT (run with --archived):
+#   *.c                                    one program per language feature; the generated IR must
+#                                          equal expected/<name>.tac
+#   semantic_errors/err_*.c                must be rejected; stderr must contain the text after
+#                                          "// EXPECT:" on the first line
+#   semantic_errors/warn_*.c               must be accepted, with that warning
+#   semantic_valid/ok_*.c                  must be accepted with no diagnostics at all
+#
+# Related make targets: make check, make check-archived, make test-parser, make test-semantic, make ir.
 # The generated IR is written to tests/ir_output/ (ignored by git).
 
 UPDATE=0
 TEST_MODE=0
-case "$1" in
-    --update) UPDATE=1; TEST_MODE=1; shift ;;
-    --test)   TEST_MODE=1; shift ;;
-esac
+ARCHIVED=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --update)   UPDATE=1; TEST_MODE=1; shift ;;
+        --test)     TEST_MODE=1; shift ;;
+        --archived) ARCHIVED=1; TEST_MODE=1; shift ;;
+        *) break ;;
+    esac
+done
 
 # ---- IR mode:  ./run.sh <file.c | folder>  prints the IR of that file (or of every .c in the folder) ----
 if [ $TEST_MODE -eq 0 ]; then
     if [ $# -ne 1 ]; then
         echo "Usage: $0 <file.c | folder>        print the IR of a file, or of every .c file in a folder"
-        echo "       $0 --test|--update <executable>   run the regression suite"
+        echo "       $0 --test <executable>             run the suite in tests/"
+        echo "       $0 --archived [--update] <executable>   run the archived suite (archived_tests/)"
         exit 1
     fi
     TARGET="$1"
@@ -72,7 +81,7 @@ if [ $TEST_MODE -eq 0 ]; then
 fi
 
 if [ $# -ne 1 ]; then
-    echo "Usage: $0 [--test|--update] <executable>"
+    echo "Usage: $0 [--test | --archived [--update]] <executable>"
     exit 1
 fi
 
@@ -102,11 +111,13 @@ if [ $probe -ge 126 ]; then
 fi
 
 TESTS="tests"
+ARCH="archived_tests/25_OCT"
 OUT="$TESTS/ir_output"
-EXPECTED="$TESTS/25_OCT/expected"
+EXPECTED="$ARCH/expected"
 TMP="$OUT/_tmp"
 
-mkdir -p "$OUT" "$EXPECTED"
+mkdir -p "$OUT"
+[ $ARCHIVED -eq 1 ] && mkdir -p "$EXPECTED"
 
 total=0
 passed=0
@@ -129,6 +140,7 @@ compile() {
 }
 
 # ---- 1. syntax tests ----
+if [ $ARCHIVED -eq 0 ]; then
 group "Syntax tests ($TESTS/parser)"
 for f in "$TESTS"/parser/*.c; do
     [ -e "$f" ] || continue
@@ -146,14 +158,17 @@ for f in "$TESTS"/parser/*.c; do
     fi
 done
 
+fi
+
+if [ $ARCHIVED -eq 1 ]; then
 # ---- 2. one program per language feature: the IR must match the reviewed expected IR ----
-group "Feature tests: generated IR vs expected IR ($TESTS/25_OCT)"
-for f in "$TESTS"/25_OCT/*.c; do
+group "Feature tests: generated IR vs expected IR ($ARCH)"
+for f in "$ARCH"/*.c; do
     [ -e "$f" ] || continue
     total=$((total + 1))
     name=$(basename "$f" .c)
-    mkdir -p "$OUT/25_OCT"
-    out="$OUT/25_OCT/$name.tac"
+    mkdir -p "$OUT/archived"
+    out="$OUT/archived/$name.tac"
     exp="$EXPECTED/$name.tac"
     if ! compile "$f" "$out" "$TMP.err"; then
         fail "$name (rejected)"; show "$TMP.err"
@@ -169,12 +184,12 @@ for f in "$TESTS"/25_OCT/*.c; do
 done
 
 # ---- 3. semantic errors and warnings ----
-group "Semantic errors and warnings ($TESTS/25_OCT/semantic_errors)"
-for f in "$TESTS"/25_OCT/semantic_errors/*.c; do
+group "Semantic errors and warnings ($ARCH/semantic_errors)"
+for f in "$ARCH"/semantic_errors/*.c; do
     [ -e "$f" ] || continue
     total=$((total + 1))
     name=$(basename "$f" .c)
-    want=$(head -1 "$f" | sed -n 's#^// EXPECT: *##p')
+    want=$(head -1 "$f" | tr -d '\015' | sed -n 's#^// EXPECT: *##p')
     compile "$f" "$TMP.tac" "$TMP.err"
     status=$?
     if [ -z "$want" ]; then
@@ -191,8 +206,8 @@ for f in "$TESTS"/25_OCT/semantic_errors/*.c; do
 done
 
 # ---- 4. valid programs must produce no diagnostics ----
-group "Valid programs, no diagnostics ($TESTS/25_OCT/semantic_valid)"
-for f in "$TESTS"/25_OCT/semantic_valid/*.c; do
+group "Valid programs, no diagnostics ($ARCH/semantic_valid)"
+for f in "$ARCH"/semantic_valid/*.c; do
     [ -e "$f" ] || continue
     total=$((total + 1))
     name=$(basename "$f" .c)
@@ -205,6 +220,9 @@ for f in "$TESTS"/25_OCT/semantic_valid/*.c; do
     fi
 done
 
+fi
+
+if [ $ARCHIVED -eq 0 ]; then
 # ---- 5. earlier feature programs: must compile ----
 group "Compile-only tests ($TESTS/semantic)"
 for f in "$TESTS"/semantic/*.c; do
@@ -215,6 +233,8 @@ for f in "$TESTS"/semantic/*.c; do
     if compile "$f" "$OUT/semantic/${name%.c}.tac" "$TMP.err"; then pass "$name"
     else fail "$name (rejected)"; show "$TMP.err"; fi
 done
+
+fi
 
 rm -f "$TMP.err" "$TMP.diff" "$TMP.tac"
 

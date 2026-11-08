@@ -110,7 +110,7 @@ For invalid input, lexical, syntax or semantic errors are reported instead and n
 `run.sh` is a convenient wrapper that prints the IR of one file, or of every `.c` file in a folder, and saves each as `./<name>.TAC`:
 
 ```bash
-./run.sh tests/25_OCT/test14_recursion.c
+./run.sh archived_tests/25_OCT/test14_recursion.c
 ./run.sh tests/semantic/
 ```
 
@@ -142,14 +142,14 @@ Lexical errors are reported to `stderr`, and the lexer returns a non-zero exit s
 
 ## Test Suite
 
-All test cases live under `tests/` and are run by one script, `run.sh`, which runs the whole suite with `--test <executable>`:
+Test cases live under `tests/` and are run by one script, `run.sh`, with `--test <executable>`. The older front-end suite (golden IR, semantic error/valid programs) is kept in `archived_tests/25_OCT/` and runs separately with `--archived <executable>`:
 
 ```bash
 make                # builds the lexer and parser
 ./run.sh --test ./parser   # (./parser.exe on Windows) runs every test case; exits 0 only if all of them pass
 ```
 
-`make check` builds and runs the whole suite. The generated IR is written to `tests/ir_output/` (ignored by git).
+`make check` builds and runs the suite in `tests/`; `make check-archived` runs the archived suite. The generated IR is written to `tests/ir_output/` (ignored by git).
 
 ### Make targets
 
@@ -161,15 +161,16 @@ make                # builds the lexer and parser
 | `make test-parser`   | Syntax-check `tests/parser/*.c` (`_invalid` files must be rejected), printing errors.              |
 | `make test-semantic` | Semantic-check `tests/semantic/*.c`, printing errors.                                              |
 | `make ir`            | IR for every `tests/semantic/*.c`, written to `./<name>.TAC`. A failing file's `.TAC` holds the diagnostics, headed by the failing phase. |
-| `make check`         | Full regression suite (`run.sh`).                                                                  |
+| `make check`         | Regression suite in `tests/` (`run.sh --test`).                                                    |
+| `make check-archived`| Archived front-end suite in `archived_tests/25_OCT/` (`run.sh --archived`).                        |
 | `make clean`         | Remove binaries, generated sources, `./*.TAC` and `tests/ir_output/`.                              |
 
 | Folder                              | Tests | What `run.sh` checks                                                                                  |
 | ----------------------------------- | ----- | ----------------------------------------------------------------------------------------------------- |
 | `tests/parser/`                     | 5     | Syntax. Files whose name contains `_invalid` must be rejected, all others accepted.                   |
-| `tests/25_OCT/*.c`                  | 32    | One program per language feature. The generated IR must equal `tests/25_OCT/expected/<name>.tac`.     |
-| `tests/25_OCT/semantic_errors/`     | 71    | `err_*.c` must be rejected, `warn_*.c` accepted; stderr must contain the `// EXPECT:` text (line 1).  |
-| `tests/25_OCT/semantic_valid/`      | 22    | Tricky and realistic valid programs: accepted, with no diagnostics at all.                            |
+| `archived_tests/25_OCT/*.c`         | 32    | One program per language feature. The generated IR must equal `archived_tests/25_OCT/expected/<name>.tac`.     |
+| `archived_tests/25_OCT/semantic_errors/` | 71    | `err_*.c` must be rejected, `warn_*.c` accepted; stderr must contain the `// EXPECT:` text (line 1).  |
+| `archived_tests/25_OCT/semantic_valid/` | 22    | Tricky and realistic valid programs: accepted, with no diagnostics at all.                            |
 | `tests/semantic/`                   | 14    | Must compile (also used by `make test-semantic` and `make ir`).                                       |
 
 `tests/lexer/` holds inputs for the standalone lexer (`make test-lexer`).
@@ -193,7 +194,7 @@ All tests passed!
 
 ### Features covered
 
-| Feature                                  | Test program (`tests/25_OCT/`)                                          |
+| Feature                                  | Test program (`archived_tests/25_OCT/`)                                          |
 | ---------------------------------------- | ----------------------------------------------------------------------- |
 | All arithmetic and logical operators     | `test01_arith_logical_ops.c`                                            |
 | if-else                                  | `test02_if_else.c`                                                      |
@@ -399,7 +400,7 @@ Lexical, syntax and semantic errors all cause the parser to return a non-zero ex
 
 This allows the automated test script to distinguish successfully parsed programs from programs containing errors.
 
-To run all tests (syntax, IR, semantic): `make check`, or `./run.sh --test ./parser`
+To run the tests: `make check` (`tests/`) and `make check-archived` (`archived_tests/`), or `./run.sh --test ./parser` / `./run.sh --archived ./parser`
 
 ## Scope
 

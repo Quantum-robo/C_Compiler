@@ -64,13 +64,14 @@ The symbol table is built while the parser reads the program (in `src/parser/par
 | `make test-parser`     | Syntax-check `tests/parser/*.c` (files with `_invalid` in the name must be rejected).                     |
 | `make test-semantic`   | Semantic-check `tests/semantic/*.c` and print the errors.                                                 |
 | `make ir`              | IR for every `tests/semantic/*.c`, written to `./<name>.TAC`. A failing file's `.TAC` holds the diagnostics, headed by the failing phase. |
-| `make check`           | The full regression suite (`./run.sh --test`).                                                            |
+| `make check`           | The regression suite in `tests/` (`./run.sh --test`).                                                     |
+| `make check-archived`  | The archived front-end suite in `archived_tests/25_OCT/` (`./run.sh --archived`).                         |
 | `make clean`           | Remove binaries, generated sources, `./*.TAC` and `tests/ir_output/`.                                     |
 | `./parser file.c [out]`| Compile one file; the IR is printed and saved to `file.tac`, or to `out`.                                 |
 | `./lexer file.c`       | Print the token table of one file.                                                                        |
 | `./run.sh file.c`      | Print the IR of one file (or every `.c` in a folder) and save it as `./<name>.TAC`.                       |
 | `./run.sh --test ./parser`   | Run the whole test suite; exits 0 only if every test passes.                                        |
-| `./run.sh --update ./parser` | Re-save the expected IR in `tests/25_OCT/expected/` (only after reviewing the new IR).              |
+| `./run.sh --update --archived ./parser` | Re-save the expected IR in `archived_tests/25_OCT/expected/` (only after reviewing the new IR). |
 
 ## 5. Troubleshooting
 

@@ -26,7 +26,7 @@ PARSER_H  = $(PARSER_DIR)/parser.tab.h
 # Headers are prerequisites so that editing one rebuilds the binaries.
 HEADERS = $(wildcard $(LEXER_DIR)/*.hpp $(IR_DIR)/*.hpp $(SEM_DIR)/*.hpp)
 
-.PHONY: all test test-lexer test-parser test-semantic ir check clean
+.PHONY: all test test-lexer test-parser test-semantic ir check check-archived clean
 
 all: lexer parser
 
@@ -125,9 +125,13 @@ ir: parser
 		fi; \
 	done; rm -f .ir.err
 
-# make check: the full regression suite (every test folder, golden IR comparison)
+# make check: the regression suite in tests/
 check: parser
 	./run.sh --test $(PARSER_BIN)
+
+# make check-archived: the archived front-end suite (archived_tests/25_OCT, golden IR comparison)
+check-archived: parser
+	./run.sh --archived $(PARSER_BIN)
 
 clean:
 	rm -f $(LEXER_GEN) $(PARSER_C) $(PARSER_H)
