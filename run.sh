@@ -13,6 +13,8 @@
 #   tests/semantic/*.c                     must compile (IR is generated but not compared)
 #   tests/ir/*.c                           the IR and the layout / symbol tables (--tables) must equal
 #                                          tests/ir/expected/<name>.tac
+#   tests/codegen/*.c                      compiled to MIPS (-S), run on SPIM (stdin from <name>.in if it exists);
+#                                          the output must equal tests/codegen/<name>.expected
 #
 # Layout of archived_tests/25_OCT (run with --archived):
 #   *.c                                    one program per language feature; the generated IR must
@@ -258,6 +260,40 @@ for f in "$TESTS"/ir/*.c; do
         fail "$name (IR differs from expected)"; show "$TMP.diff" 20
     fi
 done
+
+# ---- 7. end-to-end tests: compile to MIPS, run on SPIM, compare the output with <name>.expected ----
+# A <name>.in file, if present, is fed to the program's standard input.
+group "End-to-end tests: MIPS code run on SPIM ($TESTS/codegen)"
+if ! command -v spim > /dev/null 2>&1; then
+    echo "  SKIP  spim is not installed (sudo apt install spim): the end-to-end tests were not run"
+else
+    for f in "$TESTS"/codegen/*.c; do
+        [ -e "$f" ] || continue
+        total=$((total + 1))
+        name=$(basename "$f" .c)
+        mkdir -p "$OUT/codegen"
+        asm="$OUT/codegen/$name.s"
+        got="$OUT/codegen/$name.out"
+        exp="$TESTS/codegen/$name.expected"
+        inp=/dev/null
+        [ -f "$TESTS/codegen/$name.in" ] && inp="$TESTS/codegen/$name.in"
+        if ! compile "$f" "$OUT/codegen/$name.tac" "$TMP.err" "-S $asm"; then
+            fail "$name (compile failed)"; show "$TMP.err"
+            continue
+        fi
+        if command -v timeout > /dev/null 2>&1; then run_spim="timeout 60 spim"; else run_spim="spim"; fi
+        $run_spim -quiet -file "$asm" < "$inp" 2>&1             | sed '/^SPIM Version/d;/^Copyright 1990/d;/^All Rights Reserved/d;/^See the file README/d;/^Loaded:/d' > "$got"
+        if [ $UPDATE -eq 1 ]; then
+            cp "$got" "$exp"; pass "$name (expected output updated)"
+        elif [ ! -f "$exp" ]; then
+            fail "$name (no $name.expected; review the output, then run with --update)"
+        elif diff --strip-trailing-cr -u "$exp" "$got" > "$TMP.diff"; then
+            pass "$name"
+        else
+            fail "$name (output differs from $name.expected)"; show "$TMP.diff" 20
+        fi
+    done
+fi
 
 fi
 

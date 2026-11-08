@@ -1,0 +1,9 @@
+total=300
+1
+0
+0
+account 100 balance 20 log: 50 -30
+account 101 balance 100 log: 100
+account 102 balance 180 log: 150 30
+total=300
+999 15

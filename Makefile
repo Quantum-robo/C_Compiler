@@ -18,13 +18,14 @@ LEXER_DIR  = src/lexer
 PARSER_DIR = src/parser
 IR_DIR     = src/ir
 SEM_DIR    = src/semantic
+GEN_DIR    = src/codegen
 
 LEXER_GEN = $(LEXER_DIR)/lex.yy.c
 PARSER_C  = $(PARSER_DIR)/parser.tab.c
 PARSER_H  = $(PARSER_DIR)/parser.tab.h
 
 # Headers are prerequisites so that editing one rebuilds the binaries.
-HEADERS = $(wildcard $(LEXER_DIR)/*.hpp $(IR_DIR)/*.hpp $(SEM_DIR)/*.hpp)
+HEADERS = $(wildcard $(LEXER_DIR)/*.hpp $(IR_DIR)/*.hpp $(SEM_DIR)/*.hpp $(GEN_DIR)/*.hpp)
 
 .PHONY: all test test-lexer test-parser test-semantic ir check check-archived clean
 
@@ -47,9 +48,9 @@ lexer$(EXE): $(LEXER_GEN) $(PARSER_H) $(LEXER_DIR)/Token.cpp $(LEXER_DIR)/main.c
 
 # Compiler front end: lexer + parser + semantic checks + IR generation
 
-parser$(EXE): $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(HEADERS)
+parser$(EXE): $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(GEN_DIR)/MipsGen.cpp $(GEN_DIR)/Runtime.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -I$(LEXER_DIR) -I$(PARSER_DIR) -I$(IR_DIR) \
-		$(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(LDFLAGS) -o parser$(EXE)
+		$(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(GEN_DIR)/MipsGen.cpp $(GEN_DIR)/Runtime.cpp $(LDFLAGS) -o parser$(EXE)
 	@$(call WARMUP,./parser$(EXE))
 
 $(PARSER_C) $(PARSER_H): $(PARSER_DIR)/parser.y

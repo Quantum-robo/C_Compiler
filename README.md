@@ -2,7 +2,7 @@
 
 A compiler front end for a C-like language (C with classes, references and `new`/`delete`), implemented with **Flex**, **GNU Bison** and C++17.
 
-The pipeline has four phases:
+The pipeline has five phases:
 
 1. **Lexical analysis** (Flex): recognizes tokens; the standalone `lexer` prints a token / token-type table.
 2. **Syntax analysis** (Bison): validates the grammar and reports errors with line numbers.
@@ -10,7 +10,7 @@ The pipeline has four phases:
 4. **Intermediate code generation**: typed three-address code (TAC) for every program that passes the earlier phases, together with the struct layouts and symbol tables a code generator needs (see [docs/IR.md](docs/IR.md)).
 
 The program is read twice (the first pass collects the class layouts), so a method can use members declared after it.
-MIPS code generation is the next step of the project; for now the compiler stops at TAC.
+5. **MIPS code generation**: `-S prog.s` turns the TAC into MIPS32 assembly for the **SPIM** simulator (`spim -file prog.s`). The output includes a small runtime library (`printf`, `malloc`, ...). See [docs/MIPS.md](docs/MIPS.md).
 
 ## Project Structure
 
@@ -25,6 +25,10 @@ C_Compiler/
 │   │   └── main.cpp            (standalone lexer driver)
 │   ├── parser/
 │   │   └── parser.y            (grammar + semantic checks + IR generation)
+│   ├── codegen/
+│   │   ├── MipsGen.hpp
+│   │   ├── MipsGen.cpp         (TAC -> MIPS32 for SPIM)
+│   │   └── Runtime.cpp         (runtime library in assembly: printf, malloc, strcpy, ...)
 │   ├── semantic/
 │   │   ├── Types.hpp           (type model used by the semantic checks)
 │   │   ├── Layout.hpp
@@ -36,7 +40,8 @@ C_Compiler/
 │   ├── lexer/                  (inputs for make test-lexer)
 │   ├── parser/                 (syntax tests, make test-parser)
 │   ├── semantic/               (feature programs, make test-semantic / make ir)
-│   └── ir/                     (IR and layout / symbol tables compared with expected/<name>.tac)
+│   ├── ir/                     (IR and layout / symbol tables compared with expected/<name>.tac)
+│   └── codegen/                (end-to-end programs run on SPIM, output compared with <name>.expected)
 ├── archived_tests/
 │   └── 25_OCT/                 (archived front-end suite: expected IR, semantic error/warning/valid tests)
 │       ├── expected/           (reviewed expected IR, one .tac per feature test)
@@ -45,6 +50,7 @@ C_Compiler/
 ├── test.c                      (sample input for make test)
 ├── docs/
 │   ├── IR.md                   (the typed three-address code, layouts and tables the code generator uses)
+│   ├── MIPS.md                 (code generation scheme, frame layout, calling convention, runtime)
 │   └── LANGUAGE_GUIDE.md       (rules, limitations, enums, symbol table, commands, troubleshooting)
 ├── Makefile
 ├── run.sh
@@ -96,6 +102,8 @@ For example:
 ```
 
 Add `--tables` (`./parser --tables prog.c`) to also print and save the struct layouts and the symbol tables.
+
+Add `-S prog.s` to also generate MIPS assembly, and run it with `spim -file prog.s`.
 
 For a valid program, the parser reports success, prints the three-address-code IR, and writes it to `<source_file>.tac` (or to the path given as a second argument):
 
@@ -176,6 +184,7 @@ make                # builds the lexer and parser
 | `archived_tests/25_OCT/semantic_valid/` | 22    | Tricky and realistic valid programs: accepted, with no diagnostics at all.                            |
 | `tests/semantic/`                   | 14    | Must compile (also used by `make test-semantic` and `make ir`).                                       |
 | `tests/ir/`                         | 5     | The IR and the layout / symbol tables (`--tables`) must equal `tests/ir/expected/<name>.tac`.         |
+| `tests/codegen/`                    | 23    | Compiled to MIPS, run on SPIM; the output must equal `<name>.expected` (skipped if `spim` is missing). |
 
 `tests/lexer/` holds inputs for the standalone lexer (`make test-lexer`).
 
@@ -183,14 +192,14 @@ If the IR changes on purpose, review it and re-bless the expected files with `./
 
 If the executable cannot be launched at all (for example because Windows is blocking a freshly built `.exe`), `run.sh` stops with a clear message and exit status 2 instead of failing every test.
 
-A successful run of `make check` (24 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
+A successful run of `make check` (47 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
 
 ```text
 ==============================
 Test Summary
 ==============================
-Total:  24
-Passed: 24
+Total:  47
+Passed: 47
 Failed: 0
 
 All tests passed!

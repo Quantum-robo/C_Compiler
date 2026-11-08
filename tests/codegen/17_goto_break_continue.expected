@@ -1,0 +1,13 @@
+goto loop 0
+goto loop 1
+goto loop 2
+done
+n=1
+n=3
+n=5
+n=7
+found=23
+k=3
+k=4
+x=1
+x=3

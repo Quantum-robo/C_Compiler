@@ -21,6 +21,7 @@
 #include "../ir/TAC.hpp"
 #include "../semantic/Types.hpp"
 #include "../semantic/Layout.hpp"
+#include "../codegen/MipsGen.hpp"
 
 extern int yylex();
 extern int yylineno;
@@ -202,6 +203,16 @@ static int cur_access = 0;             // 0 public, 1 protected, 2 private
 static std::vector<AggrFrame> aggr_stack;
 static std::vector<PendingName> pendingNames;
 static std::map<std::string, std::set<std::string> > classMethods;
+static std::map<std::string, std::set<std::string> > finalMethods;   // classMethods at the end of the first pass
+
+// Is 'm' a method of 'cls'? A method declared further down the class body counts too (pass 1 saw it),
+// so a call to it is never taken for a library function of the same name (log, abs, ...).
+static bool hasMethod(const std::string& cls, const std::string& m) {
+    std::map<std::string, std::set<std::string> >::iterator it = classMethods.find(cls);
+    if (it != classMethods.end() && it->second.count(m)) return true;
+    it = finalMethods.find(cls);
+    return it != finalMethods.end() && it->second.count(m) > 0;
+}
 static std::map<std::string, std::vector<std::string> > aggrMembers;
 static std::map<std::string, std::map<std::string, Type> > aggrMemberTypes;
 static std::map<std::string, std::map<std::string, int> > memberAccess;
@@ -742,7 +753,7 @@ static Operand* identOp(const std::string& n) {
                 if (ft != mt->second.end()) o->ty = ft->second;
             }
         }
-    } else if (funcSigs.count(n) || isBuiltinName(n) || (inMethod() && classMethods[cur_aggr].count(n))) {
+    } else if (funcSigs.count(n) || isBuiltinName(n) || (inMethod() && hasMethod(cur_aggr, n))) {
         o->lvalue = true;                // a function or library name: type unknown
     } else {
         o->undeclared = true;
@@ -818,7 +829,7 @@ static Operand* member(Operand* base, const std::string& m, bool arrow) {
     bool method = false;
     if (!cls.empty() && aggrMembers.count(cls)) {
         bool field = isMemberOf(cls, m);
-        method = classMethods[cls].count(m) > 0;
+        method = hasMethod(cls, m);
         bool inside = inMethod() && cur_aggr == cls;
         if (!field && !method) {
             if (!inside) semError("'" + cls + "' has no member named '" + m + "'");
@@ -875,7 +886,7 @@ static Operand* member(Operand* base, const std::string& m, bool arrow) {
 
 static std::string classOf(Operand* obj) {
     if (!obj) return "";
-    if (obj->place == "this") return cur_aggr;
+    if (obj->kind == Operand::VALUE && obj->place == "this") return cur_aggr;   // 'this' itself (an element at offset 0 has the same text)
     return (known(obj->ty) && obj->ty.aggr) ? obj->ty.base : std::string();
 }
 
@@ -885,13 +896,13 @@ static bool resolveMethod(Operand* f, std::string& target) {
     if (f->kind != Operand::VALUE) return false;
     if (f->isMember) {
         std::string cls = classOf(f->objOp);
-        if (!cls.empty() && classMethods[cls].count(f->member)) {
+        if (!cls.empty() && hasMethod(cls, f->member)) {
             target = cls + "::" + f->member;
             return true;
         }
         return false;
     }
-    if (inMethod() && classMethods[cur_aggr].count(f->place) && !lookupSym(f->place)) {
+    if (inMethod() && hasMethod(cur_aggr, f->place) && !lookupSym(f->place)) {
         target = cur_aggr + "::" + f->place;
         return true;
     }
@@ -1165,6 +1176,52 @@ static void finalizeLeaf(InitNode* n) {
     }
 }
 
+// The scalar leaves of a nested brace list as (flattened element index, leaf) pairs.
+static void collectLeaves(InitNode* n, const std::vector<long>& dims, size_t level, long off,
+                          std::vector<std::pair<long, InitNode*> >& out) {
+    long stride = 1;
+    for (size_t k = level + 1; k < dims.size(); ++k) stride *= dims[k];
+    for (size_t i = 0; i < n->items.size(); ++i) {
+        InitNode* c = n->items[i];
+        if (c->isList) collectLeaves(c, dims, level + 1, off + (long)i * stride, out);
+        else out.push_back(std::make_pair(off + (long)i, c));
+    }
+}
+
+// Store the values of a brace initializer into the struct / class / union at (addr + base): one value
+// per member in declaration order (a union sets its first member). Members may be arrays
+// ({1, 2, 3}, "text" for a char array) or aggregates themselves ({ {1, 2}, 3 }).
+static void emitAggrInit(const std::string& addr, long base, const AggrLayout* al, InitNode* init) {
+    size_t n = al->isUnion ? 1 : al->fields.size();
+    for (size_t i = 0; i < init->items.size() && i < n; ++i) {
+        InitNode* c = init->items[i];
+        const FieldInfo& f = al->fields[i];
+        long off = base + f.offset;
+        if (!f.dims.empty()) {
+            bool charField = f.ty.base == "char" && !f.ty.aggr && f.ty.ptr == 0;
+            if (!c->isList && c->isStr && charField) {
+                std::string p = addr;
+                if (off != 0) {
+                    p = tacGen.newTemp(addressType());
+                    tacGen.emit("+", addr, numstr(off), p);
+                }
+                emitStrcpy(p, c->value);
+            } else if (c->isList) {
+                long esz = elemBytes(f.ty);
+                std::vector<std::pair<long, InitNode*> > leaves;
+                collectLeaves(c, f.dims, 0, 0, leaves);
+                for (size_t k = 0; k < leaves.size(); ++k)
+                    tacGen.emit("store", leaves[k].second->value, "", addr, (int)esz, (int)(off + leaves[k].first * esz));
+            }
+        } else if (f.ty.aggr && f.ty.ptr == 0) {
+            const AggrLayout* sub = finalLayouts.find(f.ty.base);
+            if (c->isList && sub) emitAggrInit(addr, off, sub, c);
+        } else if (!c->isList) {
+            tacGen.emit("store", c->value, "", addr, (int)accessSize(f.ty), (int)off);
+        }
+    }
+}
+
 static void emitInitial(const std::string& target, const Symbol& sym, InitNode* init) {
     if (!init->isList) {
         finalizeLeaf(init);
@@ -1191,11 +1248,7 @@ static void emitInitial(const std::string& target, const Symbol& sym, InitNode* 
             if (local) tacGen.emit("zero", target, "", "", (int)al->size);
             std::string a = tacGen.newTemp(addressType());
             tacGen.emit("addr", target, "", a);
-            size_t n = al->isUnion ? 1 : al->fields.size();
-            for (size_t i = 0; i < init->items.size() && i < n; ++i)
-                if (!init->items[i]->isList)
-                    tacGen.emit("store", init->items[i]->value, "", a,
-                                (int)accessSize(al->fields[i].ty), (int)al->fields[i].offset);
+            emitAggrInit(a, 0, al, init);
         } else if (!init->items.empty() && !init->items[0]->isList) {
             tacGen.emit("=", init->items[0]->value, "", target);   // int x = { 5 };
         }
@@ -1204,6 +1257,15 @@ static void emitInitial(const std::string& target, const Symbol& sym, InitNode* 
     if (local) {
         long total = finalLayouts.objectSize(sym.ty, numericDims(sym.dims, ""));
         if (total > 0) tacGen.emit("zero", target, "", "", (int)total);
+    }
+    const AggrLayout* elemLayout = (sym.ty.aggr && sym.ty.ptr == 0) ? finalLayouts.find(sym.ty.base) : nullptr;
+    if (elemLayout && sym.dims.size() == 1) {
+        // array of structs: struct Point pts[2] = { {1, 2}, {3, 4} };
+        std::string a = tacGen.newTemp(addressType());
+        tacGen.emit("addr", target, "", a);
+        for (size_t i = 0; i < init->items.size(); ++i)
+            if (init->items[i]->isList) emitAggrInit(a, (long)i * elemLayout->size, elemLayout, init->items[i]);
+        return;
     }
     emitInitList(target, sym.dims, init, 0, 0, (int)elemBytes(sym.ty));
 }
@@ -1353,7 +1415,7 @@ static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
                 if (d->dims.size() == 1 && isNumber(d->dims[0]) &&
                     (long long)init->items.size() > std::stoll(d->dims[0]))
                     semError("excess elements in array initializer for '" + d->name + "'");
-                checkInitLeaves(init, elem);
+                if (!isAggrVal(elem)) checkInitLeaves(init, elem);   // arrays of structs take { {..}, {..} }
             }
         } else if (init->op) {
             Operand* o = init->op;
@@ -1679,17 +1741,18 @@ static long sizeOfOperand(Operand* o) {
 }
 
 // new T / new T[n] become a call to malloc; delete / delete[] a call to free.
-static Operand* newObject(const std::string& typeName_, Operand* count) {
-    Type elem = typeFromName(typeName_, 0, 0, false);
-    long size = finalLayouts.baseSize(elem);
-    if (elem.aggr && size == 0) semError("invalid use of incomplete type '" + elem.base + "'");
+// 'stars' is the number of '*' written after the type: new int*[n] allocates n pointers.
+static Operand* newObject(const std::string& typeName_, int stars, Operand* count) {
+    Type elem = typeFromName(typeName_, stars, 0, false);
+    long size = elem.ptr > 0 ? 4 : finalLayouts.baseSize(elem);
+    if (elem.aggr && elem.ptr == 0 && size == 0) semError("invalid use of incomplete type '" + elem.base + "'");
     std::string bytes = numstr(size);
     if (count) {
         if (known(count->ty) && !isIntegral(count->ty)) semError("size in new-expression must be an integer");
         bytes = mulStr(rval(count), numstr(size));
     }
     tacGen.emit("param", bytes, "", "");
-    Type pt = typeFromName(typeName_, 1, 0, false);
+    Type pt = typeFromName(typeName_, stars + 1, 0, false);
     std::string t = tacGen.newTemp(pt);
     tacGen.emit("call", "malloc", "1", t);
     return typedOp(t, pt);
@@ -1782,6 +1845,8 @@ static void resetState() {
 %token LEFT_PAREN RIGHT_PAREN LEFT_BRACKET RIGHT_BRACKET LEFT_BRACE RIGHT_BRACE
 
 /* Precedence rules */
+/* in "new int * 2" and "new int *[n]" the '*' belongs to the type: shift it (NEW_TYPE ranks below STAR) */
+%nonassoc NEW_TYPE
 %right ASSIGN PLUS_ASSIGN MINUS_ASSIGN MULTIPLY_ASSIGN DIVIDE_ASSIGN MODULO_ASSIGN
         BITWISE_AND_ASSIGN BITWISE_OR_ASSIGN BITWISE_XOR_ASSIGN
         SHIFT_LEFT_ASSIGN SHIFT_RIGHT_ASSIGN
@@ -1806,7 +1871,7 @@ static void resetState() {
 %type <init> initializer initializer_list
 %type <spec> declaration_specifiers decl_head
 %type <str> type_specifier storage_class type_qualifier assignment_operator string_literal
-%type <flag> pointer_opt access_specifier
+%type <flag> pointer_opt access_specifier new_stars
 %type <param> parameter_declaration
 %type <params> parameter_list parameter_list_opt
 %type <op> expression_opt expression assignment_expression conditional_expression
@@ -2397,11 +2462,17 @@ unary_expression
         long n = ($4 >> 1) > 0 ? 4 : finalLayouts.baseSize(typeFromName($3, 0, 0, false));
         $$ = typedOp(numstr(n), makeType("int"));
     }
-    | KW_NEW type_specifier {
-        $$ = newObject($2, nullptr);
+    | KW_NEW type_specifier %prec NEW_TYPE {
+        $$ = newObject($2, 0, nullptr);
+    }
+    | KW_NEW type_specifier new_stars %prec NEW_TYPE {
+        $$ = newObject($2, $3, nullptr);
     }
     | KW_NEW type_specifier LEFT_BRACKET expression RIGHT_BRACKET {
-        $$ = newObject($2, $4);
+        $$ = newObject($2, 0, $4);
+    }
+    | KW_NEW type_specifier new_stars LEFT_BRACKET expression RIGHT_BRACKET {
+        $$ = newObject($2, $3, $5);
     }
     | KW_DELETE unary_expression {
         if (known($2->ty) && levels($2->ty) == 0) semError("type argument of 'delete' is not a pointer");
@@ -2440,6 +2511,12 @@ postfix_expression
     | postfix_expression DECREMENT { $$ = postIncDec($1, "-"); }
     ;
 
+/* '*' after the type of a new-expression: new int*[n] */
+new_stars
+    : STAR              { $$ = 1; }
+    | new_stars STAR    { $$ = $1 + 1; }
+    ;
+
 argument_list_opt
     : /* empty */
     | argument_list
@@ -2470,7 +2547,8 @@ primary_expression
 string_literal
     : STRING_LITERAL { $$ = $1; }
     | string_literal STRING_LITERAL {
-        std::string combined = std::string($1) + std::string($2);
+        std::string first = $1, second = $2;     // "a" "b" is the single literal "ab"
+        std::string combined = first.substr(0, first.size() - 1) + second.substr(1);
         $$ = strdup(combined.c_str());
     }
     ;
@@ -2495,11 +2573,13 @@ static int runPass(FILE* input) {
 int main(int argc, char** argv) {
     std::string input_path = "";
     std::string output_path = "";
+    std::string asm_path = "";
     bool withTables = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--tables") withTables = true;            // also write the layouts and symbol tables
+        else if (a == "-S" && i + 1 < argc) asm_path = argv[++i];   // write MIPS assembly to this file
         else if (input_path.empty()) input_path = a;
         else if (output_path.empty()) output_path = a;
     }
@@ -2540,6 +2620,7 @@ int main(int argc, char** argv) {
     runPass(file);
     finalLayouts = layoutBuild;
     finalLayouts.finalize();
+    finalMethods = classMethods;
     diag_out = stderr;
     if (scratch) fclose(scratch);
 
@@ -2556,6 +2637,23 @@ int main(int argc, char** argv) {
             if (tacGen.saveTAC(output_path, withTables, finalLayouts)) {
                 printf("\n=> IR saved to: %s\n", output_path.c_str());
             }
+        }
+        if (!asm_path.empty()) {
+            FILE* asmFile = fopen(asm_path.c_str(), "w");
+            if (!asmFile) {
+                perror(("Error opening output file: " + asm_path).c_str());
+                return 1;
+            }
+            std::vector<std::string> cgErrors;
+            bool ok = generateMips(tacGen, finalLayouts, asmFile, cgErrors);
+            fclose(asmFile);
+            if (!ok) {
+                for (size_t i = 0; i < cgErrors.size(); ++i)
+                    fprintf(stderr, "CODE GENERATION ERROR: %s\n", cgErrors[i].c_str());
+                remove(asm_path.c_str());
+                return 1;
+            }
+            printf("=> MIPS assembly saved to: %s\n", asm_path.c_str());
         }
         return 0;
     }
