@@ -57,18 +57,34 @@ The generator is deliberately simple and always correct; it does not optimise.
 | `L12`                 | a compiler label                                   |
 | `U_main_retry`        | the source label `retry` in `main`                 |
 | `S_3`                 | the fourth string literal                          |
-| `rt_printf`, ...      | runtime library functions                          |
+| `RF_printf`, `RG_x`   | runtime library functions and globals (prefix R)   |
+| `rt_sys_exit`, ...    | hand-written system call stubs                     |
 
 ## Runtime library
 
-Runtime functions use the same calling convention (argument 0 at `0($sp)` on entry, result in `$v0`) and are written in
-assembly. Currently provided: `printf` (`%d %c %s %%`), `malloc`, `free`, `strcpy`, `strlen`, `strcmp`, `exit`.
-`new` / `delete` compile to `malloc` / `free`. A call to any other library function is a code generation error.
+The runtime library is written in the C subset this compiler accepts (`kRuntimeSource` in `src/codegen/Runtime.cpp`).
+When a `.s` file is produced, the compiler first compiles the program, then compiles the library with the same
+machinery, and appends **only the library functions the program uses** (directly or through each other). The library
+has its own label prefix (`RF_printf`, `RG_rt_seed`, ...), so a program can define its own `rt_pad`, `abs` or `strlen`
+without a clash: calls in the program resolve to the program's function first.
+
+Only four operating-system calls are hand-written assembly (`rt_sys_putchar`, `rt_sys_readline`, `rt_sys_sbrk`,
+`rt_sys_exit`). A variadic function such as `printf(char *fmt)` is declared with its first parameter only and finds the
+other arguments on the stack right behind it (`&fmt + 4`).
+
+| Header        | Functions provided                                                                                       |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| `stdio.h`     | `printf` (`%d %i %u %x %X %o %c %s %p %%`; flags `- 0 + space`; width, `*`, `.precision` for `%s`; `l`/`h` ignored), `scanf` (`%d %i %u %x %o %c %s %%`; width, `%*d`, `h`; returns the count or -1 at end of input), `putchar`, `puts`, `getchar`, `gets` |
+| `stdlib.h`    | `malloc`, `calloc`, `realloc`, `free` (free list kept sorted by address, neighbours merged), `abs`, `labs`, `atoi`, `rand`, `srand`, `exit` |
+| `string.h`    | `strlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `memset`, `memcpy`, `memmove`, `memcmp` |
+| `ctype.h`     | `isdigit`, `isalpha`, `isalnum`, `isupper`, `islower`, `isspace`, `isprint`, `ispunct`, `isxdigit`, `toupper`, `tolower` |
+
+`new` / `delete` compile to `malloc` / `free`. A call to any other library function (`sprintf`, `fopen`, `sqrt`, ...) is a
+`CODE GENERATION ERROR`. Input is read a line at a time (SPIM reports end of input only through `read_string`).
 
 ## Limits
 
-* No `scanf` yet and no floating point (`float`, `double` literals are rejected with a clear message).
-* `free` does nothing yet (memory is never reused).
-* `printf` has no field widths or `%x`.
+* No floating point yet (`float` / `double` literals are rejected with a clear message); no file I/O, `sprintf` or math library.
+* `rand` is a simple linear congruential generator, not the C library's sequence.
 * Function arguments are evaluated left to right (C leaves the order unspecified).
 * `cond ? a : b` is never an lvalue, so `return flag ? a : b;` is not allowed in a function returning a reference.

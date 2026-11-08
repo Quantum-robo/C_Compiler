@@ -132,25 +132,35 @@ bool builtinConstant(const std::string& n, long& v) {
     return true;
 }
 
-// Library functions provided by the runtime (label = "rt_" + name).
-const std::set<std::string>& runtimeFunctions() {
-    static const std::set<std::string> s = {"printf", "malloc", "free", "strcpy", "strlen", "strcmp", "exit"};
-    return s;
-}
-
+// One compilation unit: the user's program or the runtime library (which is itself compiled from C source).
 class Gen {
 public:
-    Gen(const TACGenerator& t, const LayoutTable& l, std::vector<std::string>& e) : tac(t), layouts(l), errors(e) {}
-    bool run(FILE* out);
+    // 'pfx' is put in front of every label this unit defines ("" for the program, "R" for the runtime), so
+    // the two units cannot clash. 'externs' maps the names of functions defined by the other unit to their
+    // labels. 'only', when given, restricts the output to these functions (the runtime is pruned).
+    Gen(const TACGenerator& t, const LayoutTable& l, std::vector<std::string>& e, const std::string& prefix,
+        const std::map<std::string, std::string>& ext, const std::set<std::string>* onlyFuncs, bool entryPoint)
+        : tac(t), layouts(l), errors(e), pfx(prefix), externs(ext), only(onlyFuncs), isProgram(entryPoint) {}
+
+    bool generate();                               // false if errors were reported
+    std::string dataText() const { return data.str(); }
+    std::string codeText() const { return text.str(); }
+    const std::set<std::string>& externsUsed() const { return usedExterns; }
 
 private:
     const TACGenerator& tac;
     const LayoutTable& layouts;
     std::vector<std::string>& errors;
+    std::string pfx;
+    const std::map<std::string, std::string>& externs;
+    const std::set<std::string>* only;
+    bool isProgram;                                // emits the entry point and requires main
 
     std::ostringstream text;                       // the code segment
+    std::ostringstream data;                       // the data segment
+    std::set<std::string> usedExterns;             // functions of the other unit that this one refers to
     std::map<std::string, Loc> globals;            // data-segment variables by IR name
-    std::set<std::string> userFuncs;               // IR names of the functions defined by the program
+    std::set<std::string> userFuncs;               // IR names of the functions defined by this unit
     std::vector<std::pair<std::string, std::vector<int> > > strings;   // string pool: label, bytes
     std::map<std::string, std::string> stringLabel;                     // literal text -> label
 
@@ -166,7 +176,15 @@ private:
 
     Loc makeLoc(const VarInfo& v) const;
     const Loc* find(const std::string& name) const;
-    std::string funcLabel(const std::string& name) const { return "F_" + sanitize(name); }
+    // Label of a function: one of this unit, or one defined by the other unit (then it is recorded).
+    std::string funcLabel(const std::string& name) {
+        if (!userFuncs.count(name)) {
+            std::map<std::string, std::string>::const_iterator it = externs.find(name);
+            if (it != externs.end()) { usedExterns.insert(name); return it->second; }
+        }
+        return pfx + "F_" + sanitize(name);
+    }
+    bool isFunc(const std::string& name) const { return userFuncs.count(name) || externs.count(name); }
     std::string stringLabelFor(const std::string& lit);
 
     bool loadValue(const std::string& op, const char* reg);
@@ -194,9 +212,9 @@ private:
     void genLoadMem(const TACInstruction& in, bool indexed, bool addrOnly);
     void genStoreMem(const TACInstruction& in, bool indexed);
     void loadFromAddr(const std::string& result, int sz);   // value at ($t0) into the result
-    std::string userLabel(const std::string& n) const { return "U_" + fname + "_" + sanitize(n); }
+    std::string userLabel(const std::string& n) const { return pfx + "U_" + fname + "_" + sanitize(n); }
 
-    void emitData(std::ostringstream& d);
+    void emitData();
 };
 
 Loc Gen::makeLoc(const VarInfo& v) const {
@@ -232,7 +250,7 @@ const Loc* Gen::find(const std::string& name) const {
 std::string Gen::stringLabelFor(const std::string& lit) {
     std::map<std::string, std::string>::iterator it = stringLabel.find(lit);
     if (it != stringLabel.end()) return it->second;
-    std::string l = "S_" + std::to_string(strings.size());
+    std::string l = pfx + "S_" + std::to_string(strings.size());
     strings.push_back(std::make_pair(l, decodeString(lit)));
     stringLabel[lit] = l;
     return l;
@@ -257,7 +275,7 @@ bool Gen::loadValue(const std::string& op, const char* reg) {
         return true;
     }
     if (builtinConstant(op, v)) { ins(std::string("li ") + reg + ", " + std::to_string(v)); return true; }
-    if (userFuncs.count(op)) { ins(std::string("la ") + reg + ", " + funcLabel(op)); return true; }
+    if (isFunc(op)) { ins(std::string("la ") + reg + ", " + funcLabel(op)); return true; }
     error("unknown name '" + op + "' (not a variable, constant or function of this program)");
     ins(std::string("li ") + reg + ", 0");
     return false;
@@ -267,7 +285,7 @@ bool Gen::loadValue(const std::string& op, const char* reg) {
 bool Gen::addrOfName(const std::string& name, const char* reg) {
     const Loc* l = find(name);
     if (!l) {
-        if (userFuncs.count(name)) { ins(std::string("la ") + reg + ", " + funcLabel(name)); return true; }
+        if (isFunc(name)) { ins(std::string("la ") + reg + ", " + funcLabel(name)); return true; }
         error("cannot take the address of '" + name + "'");
         ins(std::string("li ") + reg + ", 0");
         return false;
@@ -310,7 +328,7 @@ void Gen::emitCopy(long n) {
         return;
     }
     static int copyLoops = 0;
-    std::string l = "copy_" + std::to_string(copyLoops++);
+    std::string l = pfx + "copy_" + std::to_string(copyLoops++);
     ins("li $t7, " + std::to_string(n / 4));
     label(l);
     ins("lw $t8, 0($t0)");
@@ -356,7 +374,7 @@ void Gen::beginFunction(const FuncInfo& f, bool hidden) {
     long frame = roundUp(cur, 8);
 
     text << "\n";
-    label(f.name == "_global_init" ? std::string("__global_init") : funcLabel(f.name));
+    label(f.name == "_global_init" ? pfx + "__global_init" : funcLabel(f.name));
     ins("addiu $sp, $sp, -8");
     ins("sw $ra, 4($sp)");
     ins("sw $fp, 0($sp)");
@@ -481,10 +499,8 @@ void Gen::genCall(const TACInstruction& in) {
         addrOfName(in.result, "$t0");
         pushReg("$t0");
     }
-    if (userFuncs.count(target)) {
+    if (userFuncs.count(target) || (!find(target) && externs.count(target))) {
         ins("jal " + funcLabel(target));
-    } else if (!find(target) && runtimeFunctions().count(target)) {
-        ins("jal rt_" + target);
     } else if (find(target)) {                       // call through a function pointer
         loadValue(target, "$t0");
         ins("jalr $t0");
@@ -515,12 +531,12 @@ void Gen::genReturn(const TACInstruction& in) {
 void Gen::genInstr(const TACInstruction& in) {
     const std::string& op = in.op;
     if (op == "label") {
-        label(in.arg1 == "user" ? userLabel(in.result) : in.result);
+        label(in.arg1 == "user" ? userLabel(in.result) : pfx + in.result);
     } else if (op == "goto") {
-        ins("j " + (in.arg1 == "user" ? userLabel(in.result) : in.result));
+        ins("j " + (in.arg1 == "user" ? userLabel(in.result) : pfx + in.result));
     } else if (op == "if" || op == "ifFalse") {
         loadValue(in.arg1, "$t0");
-        ins(std::string(op == "if" ? "bnez" : "beqz") + " $t0, " + in.result);
+        ins(std::string(op == "if" ? "bnez" : "beqz") + " $t0, " + pfx + in.result);
     } else if (op == "return") {
         genReturn(in);
     } else if (op == "param") {
@@ -570,7 +586,7 @@ void Gen::genInstr(const TACInstruction& in) {
             for (long i = 0; i < n; i += 4) ins("sw $zero, " + std::to_string(i) + "($t0)");
         } else {
             static int zeroLoops = 0;
-            std::string l = "zero_" + std::to_string(zeroLoops++);
+            std::string l = pfx + "zero_" + std::to_string(zeroLoops++);
             ins("li $t7, " + std::to_string(n / 4));
             label(l);
             ins("sw $zero, 0($t0)");
@@ -600,47 +616,51 @@ void Gen::genFunction(const FuncInfo& f, const std::vector<TACInstruction>& code
 }
 
 // Data segment: globals (zero-initialised; their initial values are set by __global_init) and strings.
-void Gen::emitData(std::ostringstream& d) {
-    d << "    .data\n";
+void Gen::emitData() {
+    data << "    .data\n";
     const std::vector<VarInfo>& gv = tac.globalVars();
     for (size_t i = 0; i < gv.size(); ++i) {
         const Loc& l = globals.find(gv[i].name)->second;
-        d << "    .align 2\n" << l.label << ": .space " << roundUp(l.bytes, 4) << "\n";
+        data << "    .align 2\n" << l.label << ": .space " << roundUp(l.bytes, 4) << "\n";
     }
     for (size_t i = 0; i < strings.size(); ++i) {
-        d << strings[i].first << ":";
+        data << strings[i].first << ":";
         const std::vector<int>& b = strings[i].second;
         for (size_t k = 0; k <= b.size(); ++k) {
-            if (k % 16 == 0) d << "\n    .byte ";
-            else d << ", ";
-            d << (k < b.size() ? b[k] : 0);
+            if (k % 16 == 0) data << "\n    .byte ";
+            else data << ", ";
+            data << (k < b.size() ? b[k] : 0);
         }
-        d << "\n";
+        data << "\n";
     }
 }
 
-bool Gen::run(FILE* out) {
+bool Gen::generate() {
     const std::vector<VarInfo>& gv = tac.globalVars();
     for (size_t i = 0; i < gv.size(); ++i) {
         Loc l = makeLoc(gv[i]);
         l.global = true;
-        l.label = "G_" + sanitize(gv[i].name);
+        l.label = pfx + "G_" + sanitize(gv[i].name);
         globals[gv[i].name] = l;
     }
     const std::vector<FuncInfo>& funcs = tac.functions();
     std::map<std::string, const FuncInfo*> byName;
     for (size_t i = 0; i < funcs.size(); ++i) { userFuncs.insert(funcs[i].name); byName[funcs[i].name] = &funcs[i]; }
-    if (!userFuncs.count("main")) error("the program has no main function");
 
-    // entry point: run the global initialisers, then main; its result is the exit code
-    text << "    .text\n    .globl main\nmain:\n";
-    ins("addiu $sp, $sp, -4");
-    ins("sw $ra, 0($sp)");
-    ins("jal __global_init");
-    ins("jal F_main");
-    ins("move $a0, $v0");
-    ins("li $v0, 17");
-    ins("syscall");
+    text << "    .text\n";
+    if (isProgram) {
+        if (!userFuncs.count("main")) error("the program has no main function");
+        // entry point: run the global initialisers (the runtime's too), then main; its result is the exit code
+        text << "    .globl main\nmain:\n";
+        ins("addiu $sp, $sp, -4");
+        ins("sw $ra, 0($sp)");
+        ins("jal __global_init");
+        if (!externs.empty()) ins("jal R__global_init");
+        ins("jal F_main");
+        ins("move $a0, $v0");
+        ins("li $v0, 17");
+        ins("syscall");
+    }
 
     size_t pos = 0;
     genFunction(tac.initInfo(), tac.initCode(), pos, true);
@@ -652,23 +672,74 @@ bool Gen::run(FILE* out) {
         if (in.op != "func_begin") continue;
         std::map<std::string, const FuncInfo*>::iterator it = byName.find(in.result);
         if (it == byName.end()) { error("no table for function '" + in.result + "'"); continue; }
+        if (only && !only->count(in.result)) {          // pruned: skip the body
+            while (pos < code.size() && code[pos].op != "func_end") ++pos;
+            ++pos;
+            continue;
+        }
         genFunction(*it->second, code, pos, false);
     }
+    emitData();
+    return errors.empty();
+}
 
-    if (!errors.empty()) return false;
-
-    std::ostringstream data;
-    emitData(data);
-    fputs(data.str().c_str(), out);
-    fputs(text.str().c_str(), out);
-    fputs("\n", out);
-    fputs(kRuntimeAsm, out);
-    return true;
+// Functions reachable from 'roots' through the calls of the unit's own code.
+std::set<std::string> reachable(const TACGenerator& unit, const std::set<std::string>& roots) {
+    std::map<std::string, std::set<std::string> > calls;
+    std::string cur;
+    const std::vector<TACInstruction>& code = unit.code();
+    for (size_t i = 0; i < code.size(); ++i) {
+        if (code[i].op == "func_begin") cur = code[i].result;
+        else if (code[i].op == "func_end") cur.clear();
+        else if (!cur.empty()) {
+            // a call, or a function name used as a value (its address is taken)
+            if (code[i].op == "call") calls[cur].insert(code[i].arg1);
+            else if (code[i].op == "=" || code[i].op == "param") calls[cur].insert(code[i].arg1);
+        }
+    }
+    std::set<std::string> done;
+    std::vector<std::string> work(roots.begin(), roots.end());
+    while (!work.empty()) {
+        std::string f = work.back();
+        work.pop_back();
+        if (!done.insert(f).second) continue;
+        std::map<std::string, std::set<std::string> >::iterator it = calls.find(f);
+        if (it == calls.end()) continue;
+        for (std::set<std::string>::iterator t = it->second.begin(); t != it->second.end(); ++t)
+            work.push_back(*t);
+    }
+    return done;
 }
 
 }  // namespace
 
-bool generateMips(const TACGenerator& tac, const LayoutTable& layouts, FILE* out, std::vector<std::string>& errors) {
-    Gen g(tac, layouts, errors);
-    return g.run(out);
+// Hand-written syscall stubs the runtime's C code calls (see Runtime.cpp).
+static const char* const kSysExterns[][2] = {
+    {"__sys_putchar", "rt_sys_putchar"}, {"__sys_readline", "rt_sys_readline"},
+    {"__sys_sbrk", "rt_sys_sbrk"},       {"__sys_exit", "rt_sys_exit"}};
+
+bool generateMips(const TACGenerator& prog, const LayoutTable& progLayouts, const TACGenerator& rt,
+                  const LayoutTable& rtLayouts, FILE* out, std::vector<std::string>& errors) {
+    // the program refers to runtime functions through their "RF_" labels
+    std::map<std::string, std::string> rtLabels;
+    const std::vector<FuncInfo>& rtFuncs = rt.functions();
+    for (size_t i = 0; i < rtFuncs.size(); ++i) rtLabels[rtFuncs[i].name] = "RF_" + sanitize(rtFuncs[i].name);
+
+    Gen program(prog, progLayouts, errors, "", rtLabels, nullptr, true);
+    if (!program.generate()) return false;
+
+    // only the runtime functions the program uses (directly or through each other) are emitted
+    std::set<std::string> needed = reachable(rt, program.externsUsed());
+    std::map<std::string, std::string> sys;
+    for (size_t i = 0; i < sizeof(kSysExterns) / sizeof(kSysExterns[0]); ++i) sys[kSysExterns[i][0]] = kSysExterns[i][1];
+    Gen runtime(rt, rtLayouts, errors, "R", sys, &needed, false);
+    if (!runtime.generate()) return false;
+
+    fputs(program.dataText().c_str(), out);
+    fputs(runtime.dataText().c_str(), out);
+    fputs(program.codeText().c_str(), out);
+    fputs(runtime.codeText().c_str(), out);
+    fputs("\n", out);
+    fputs(kSysStubsAsm, out);
+    return true;
 }

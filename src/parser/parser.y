@@ -272,7 +272,7 @@ static bool isBuiltinName(const std::string& n) {
         "ceil", "fabs", "fmod", "round", "strlen", "strcpy", "strncpy", "strcat", "strncat", "strcmp",
         "strncmp", "strchr", "strrchr", "strstr", "strtok", "memset", "memcpy", "memmove", "memcmp",
         "toupper", "tolower", "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower",
-        "ispunct", "perror", "system", "assert", "qsort", "getenv",
+        "ispunct", "isprint", "isxdigit", "perror", "system", "assert", "qsort", "getenv",
         "NULL", "EOF", "stdin", "stdout", "stderr", "INT_MAX", "INT_MIN", "UINT_MAX", "LONG_MAX",
         "LONG_MIN", "CHAR_BIT", "CHAR_MAX", "CHAR_MIN", "SHRT_MAX", "SHRT_MIN", "UCHAR_MAX",
         "RAND_MAX", "EXIT_SUCCESS", "EXIT_FAILURE", "M_PI", "M_E", "BUFSIZ", "SEEK_SET", "SEEK_CUR",
@@ -2570,6 +2570,35 @@ static int runPass(FILE* input) {
     return yyparse();
 }
 
+// Compile a whole program: pass 1 collects the layout of every struct / class / union (its diagnostics are
+// discarded), pass 2 is the real compilation with every layout known. Returns yyparse's result.
+static int compileFile(FILE* file) {
+    finalLayouts.clear();
+    finalMethods.clear();
+    FILE* scratch = tmpfile();
+    if (scratch) diag_out = scratch;
+    runPass(file);
+    finalLayouts = layoutBuild;
+    finalLayouts.finalize();
+    finalMethods = classMethods;
+    diag_out = stderr;
+    if (scratch) fclose(scratch);
+    return runPass(file);
+}
+
+// Compile the runtime library (C source embedded in the compiler) into 'rt' / 'rtLayouts'.
+static bool compileRuntime(TACGenerator& rt, LayoutTable& rtLayouts) {
+    FILE* f = tmpfile();
+    if (!f) return false;
+    fputs(kRuntimeSource, f);
+    int res = compileFile(f);
+    fclose(f);
+    if (res != 0 || has_error) return false;
+    rt = tacGen;
+    rtLayouts = finalLayouts;
+    return true;
+}
+
 int main(int argc, char** argv) {
     std::string input_path = "";
     std::string output_path = "";
@@ -2612,20 +2641,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Pass 1: collect the layout of every struct / class / union. Diagnostics are discarded here;
-    // the second pass reports them.
-    finalLayouts.clear();
-    FILE* scratch = tmpfile();
-    if (scratch) diag_out = scratch;
-    runPass(file);
-    finalLayouts = layoutBuild;
-    finalLayouts.finalize();
-    finalMethods = classMethods;
-    diag_out = stderr;
-    if (scratch) fclose(scratch);
-
-    // Pass 2: the real compilation, with every layout known.
-    int res = runPass(file);
+    int res = compileFile(file);
 
     if (res == 0 && !has_error) {
         printf("\n=> PARSE SUCCESSFUL: No syntax errors found.\n");
@@ -2645,7 +2661,16 @@ int main(int argc, char** argv) {
                 return 1;
             }
             std::vector<std::string> cgErrors;
-            bool ok = generateMips(tacGen, finalLayouts, asmFile, cgErrors);
+            bool ok = false;
+            // the program's IR is kept aside while the runtime library is compiled with the same machinery
+            TACGenerator progTac = tacGen;
+            LayoutTable progLayouts = finalLayouts;
+            TACGenerator rtTac;
+            LayoutTable rtLayouts;
+            if (!compileRuntime(rtTac, rtLayouts))
+                cgErrors.push_back("internal error: the runtime library failed to compile");
+            else
+                ok = generateMips(progTac, progLayouts, rtTac, rtLayouts, asmFile, cgErrors);
             fclose(asmFile);
             if (!ok) {
                 for (size_t i = 0; i < cgErrors.size(); ++i)

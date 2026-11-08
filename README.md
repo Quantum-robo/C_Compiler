@@ -10,7 +10,7 @@ The pipeline has five phases:
 4. **Intermediate code generation**: typed three-address code (TAC) for every program that passes the earlier phases, together with the struct layouts and symbol tables a code generator needs (see [docs/IR.md](docs/IR.md)).
 
 The program is read twice (the first pass collects the class layouts), so a method can use members declared after it.
-5. **MIPS code generation**: `-S prog.s` turns the TAC into MIPS32 assembly for the **SPIM** simulator (`spim -file prog.s`). The output includes a small runtime library (`printf`, `malloc`, ...). See [docs/MIPS.md](docs/MIPS.md).
+5. **MIPS code generation**: `-S prog.s` turns the TAC into MIPS32 assembly for the **SPIM** simulator (`spim -file prog.s`). The output includes the part of the runtime library the program uses (`printf`, `scanf`, `malloc`, string and ctype functions), which is itself written in C and compiled by this compiler. See [docs/MIPS.md](docs/MIPS.md).
 
 ## Project Structure
 
@@ -28,7 +28,7 @@ C_Compiler/
 │   ├── codegen/
 │   │   ├── MipsGen.hpp
 │   │   ├── MipsGen.cpp         (TAC -> MIPS32 for SPIM)
-│   │   └── Runtime.cpp         (runtime library in assembly: printf, malloc, strcpy, ...)
+│   │   └── Runtime.cpp         (runtime library: C source compiled with the program + 4 syscall stubs)
 │   ├── semantic/
 │   │   ├── Types.hpp           (type model used by the semantic checks)
 │   │   ├── Layout.hpp
@@ -184,7 +184,7 @@ make                # builds the lexer and parser
 | `archived_tests/25_OCT/semantic_valid/` | 22    | Tricky and realistic valid programs: accepted, with no diagnostics at all.                            |
 | `tests/semantic/`                   | 14    | Must compile (also used by `make test-semantic` and `make ir`).                                       |
 | `tests/ir/`                         | 5     | The IR and the layout / symbol tables (`--tables`) must equal `tests/ir/expected/<name>.tac`.         |
-| `tests/codegen/`                    | 23    | Compiled to MIPS, run on SPIM; the output must equal `<name>.expected` (skipped if `spim` is missing). |
+| `tests/codegen/`                    | 29    | Compiled to MIPS, run on SPIM; the output must equal `<name>.expected` (skipped if `spim` is missing). |
 
 `tests/lexer/` holds inputs for the standalone lexer (`make test-lexer`).
 
@@ -192,14 +192,14 @@ If the IR changes on purpose, review it and re-bless the expected files with `./
 
 If the executable cannot be launched at all (for example because Windows is blocking a freshly built `.exe`), `run.sh` stops with a clear message and exit status 2 instead of failing every test.
 
-A successful run of `make check` (47 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
+A successful run of `make check` (53 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
 
 ```text
 ==============================
 Test Summary
 ==============================
-Total:  47
-Passed: 47
+Total:  53
+Passed: 53
 Failed: 0
 
 All tests passed!

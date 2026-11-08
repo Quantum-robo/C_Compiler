@@ -113,7 +113,8 @@ Variable kinds that the code generator must tell apart when it uses a name as an
 * A reference parameter receives an address. A struct parameter is pushed as a copy of the whole object.
 * The result is in `$v0`; a function returning `T&` returns an address.
 * `printf`, `scanf` and any other undeclared function are called like any other; the callee reads its arguments
-  from the stack. The runtime must provide `printf`, `scanf`, `malloc`, `free` and `strcpy` at least.
+  from the stack. The runtime library provides them (see [MIPS.md](MIPS.md)); the IR relies on `malloc`, `free` and
+  `strcpy` for `new`, `delete` and string initialisers.
 
 ## 7. Known limits
 
