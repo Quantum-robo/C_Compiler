@@ -167,6 +167,7 @@ struct FuncSig {
     Type ret;
     bool returnsRef = false;
     bool defined = false;
+    bool builtin = false;              // a library function of the runtime (math), replaced by a user declaration
 };
 
 static std::vector<std::map<std::string, Symbol> > scopes(1);
@@ -477,10 +478,21 @@ static bool isZeroLit(const Operand* o) { return o->kind == Operand::VALUE && o-
 /* ---- sizes (the layouts are complete during the second pass) ---- */
 
 // Bytes read or written when a value of this type is loaded or stored.
-static long accessSize(const Type& t) { return known(t) ? finalLayouts.valueSize(t) : 4; }
+// A float is tagged -4 (it is stored in IEEE single format, not as an integer); a double is 8.
+static long accessSize(const Type& t) {
+    if (!known(t)) return 4;
+    if (isFloating(t) && t.base == "float") return -4;
+    return finalLayouts.valueSize(t);
+}
 
 // Size of one element of an array of this type (or of what a pointer of this type points to).
 static long elemBytes(const Type& t) { return known(t) ? finalLayouts.elemSize(t) : 4; }
+
+// The size tag of an element access: elemBytes, but -4 for a float (see accessSize).
+static int elemTag(const Type& t) {
+    if (known(t) && !t.aggr && t.ptr == 0 && t.base == "float") return -4;
+    return (int)elemBytes(t);
+}
 
 static Type addressType() { return makeType("void", 1); }
 
@@ -630,6 +642,37 @@ static void store(Operand* lhs, const std::string& v) {
     else tacGen.emit("idxstore", lhs->place, lhs->index, v, (int)accessSize(lhs->ty));
 }
 
+/* ---- floating point ---- */
+
+// Implicit conversion between int, float and double where the representation changes: the value is copied into
+// a temporary of the target type (the code generator converts on the copy). Other conversions need no code.
+static std::string convertFp(const Type& dst, const Type& src, const std::string& v) {
+    if (!isArith(dst) || !isArith(src)) return v;
+    bool df = isFloating(dst), sf = isFloating(src);
+    if (!df && !sf) return v;
+    if (df && sf && dst.base == src.base) return v;
+    std::string t = tacGen.newTemp(dst);
+    tacGen.emit("=", v, "", t);
+    return t;
+}
+
+// A floating literal: an 'f' suffix makes it a float, an 'l' suffix is dropped.
+static Operand* floatLiteral(const char* text) {
+    std::string s = text;
+    bool single = false;
+    if (!s.empty() && (s[s.size() - 1] == 'l' || s[s.size() - 1] == 'L')) s.erase(s.size() - 1);
+    else if (!s.empty() && (s[s.size() - 1] == 'f' || s[s.size() - 1] == 'F')) { single = true; }
+    return typedOp(s, makeType(single ? "float" : "double"));
+}
+
+// Is this operand text a floating literal (1.5, .5, 2e3, 1.5f, optionally negative)?
+static bool isFloatLit(const std::string& p) {
+    size_t i = (!p.empty() && p[0] == '-') ? 1 : 0;
+    if (i >= p.size() || !(isdigit((unsigned char)p[i]) || p[i] == '.')) return false;
+    if (p.compare(i, 2, "0x") == 0 || p.compare(i, 2, "0X") == 0) return false;
+    return p.find_first_of(".eE") != std::string::npos;
+}
+
 /* ---- type checks ---- */
 
 static void checkAssign(const Type& dst, Operand* src, const std::string& ctx) {
@@ -736,7 +779,7 @@ static Operand* negate(Operand* a) {
     if (known(a->ty) && !isArith(a->ty))
         semError("wrong type argument to unary minus (type '" + typeName(a->ty) + "')");
     Type rt = isIntegral(a->ty) && a->ty.base != "long" ? makeType("int") : (isArith(a->ty) ? a->ty : Type());
-    if (a->kind == Operand::VALUE && isNumber(a->place)) {
+    if (a->kind == Operand::VALUE && (isNumber(a->place) || isFloatLit(a->place))) {
         const std::string& p = a->place;
         return typedOp(p[0] == '-' ? p.substr(1) : "-" + p, rt);
     }
@@ -1023,7 +1066,14 @@ static void pushArg(Operand* o) {
         }
         checkAssign(p->ty, o, what);
     }
-    fr.args.push_back(byRef ? refTarget(o) : rval(o));
+    if (byRef) {
+        fr.args.push_back(refTarget(o));
+        return;
+    }
+    std::string v = rval(o);
+    if (p) v = convertFp(p->ty, o->ty, v);                                   // f(int) given a double and so on
+    else if (isFloating(o->ty) && o->ty.base == "float") v = convertFp(makeType("double"), o->ty, v);   // varargs promote
+    fr.args.push_back(v);
 }
 
 // Arguments are pushed right to left; for methods the object pointer is pushed last.
@@ -1520,7 +1570,7 @@ static void emitAggrInit(const std::string& addr, long base, const AggrLayout* a
                 std::vector<std::pair<long, InitNode*> > leaves;
                 collectLeaves(c, f.dims, 0, 0, leaves);
                 for (size_t k = 0; k < leaves.size(); ++k)
-                    tacGen.emit("store", leaves[k].second->value, "", addr, (int)esz, (int)(off + leaves[k].first * esz));
+                    tacGen.emit("store", leaves[k].second->value, "", addr, elemTag(f.ty), (int)(off + leaves[k].first * esz));
             }
         } else if (f.ty.aggr && f.ty.ptr == 0) {
             const AggrLayout* sub = finalLayouts.find(f.ty.base);
@@ -1579,7 +1629,7 @@ static void emitInitial(const std::string& target, const Symbol& sym, InitNode* 
             if (init->items[i]->isList) emitAggrInit(a, (long)i * elemLayout->size, elemLayout, init->items[i]);
         return;
     }
-    emitInitList(target, sym.dims, init, 0, 0, (int)elemBytes(sym.ty));
+    emitInitList(target, sym.dims, init, 0, 0, elemTag(sym.ty));
 }
 
 // Type-check every scalar leaf of a brace initializer against the element type.
@@ -1612,7 +1662,9 @@ static void recordSignature(const std::string& name, Declarator* d, DeclSpec* sp
     std::map<std::string, FuncSig>::iterator it = funcSigs.find(name);
     if (it != funcSigs.end()) {
         const FuncSig& old = it->second;
-        if (old.params.size() != sig.params.size()) {
+        if (old.builtin) {
+            // the program declares its own version of a library function
+        } else if (old.params.size() != sig.params.size()) {
             semError("conflicting declaration of '" + name + "' (different number of parameters)");
         } else if (known(old.ret) && known(sig.ret) && typeName(old.ret) != typeName(sig.ret)) {
             semError("conflicting return type for '" + name + "' ('" + typeName(sig.ret) + "' vs '" +
@@ -2180,6 +2232,11 @@ static Operand* castOp(CastTy* ct, Operand* e) {
     }
     std::string v = rval(e);
     if (isVoidT(T)) return typedOp("", T);                 // (void) x: evaluated, value discarded
+    if (T.ptr == 0 && !T.aggr && isArith(T) && isArith(e->ty)) {
+        bool narrow = T.base == "char" || T.base == "short";
+        if (narrow && isFloating(e->ty)) v = convertFp(makeType("int"), e->ty, v);       // double -> char: via int
+        else if (!narrow && T.base != "bool") v = convertFp(T, e->ty, v);
+    }
     int bits = 0;
     bool toBool = false;
     if (T.ptr == 0 && !T.aggr) {
@@ -2234,7 +2291,8 @@ static long sizeOfOperand(Operand* o) {
         }
         return n;
     }
-    return accessSize(o->ty);
+    long a = accessSize(o->ty);
+    return a < 0 ? -a : a;
 }
 
 // new T / new T(args) / new T[n] call malloc and then the constructor(s); delete / delete[] call the destructor(s)
@@ -2306,6 +2364,44 @@ static void deleteObject(Operand* e, bool array) {
 
 // Forget everything the parser learned, so that the program can be read again.
 // (finalLayouts is kept: it is the result of the first pass.)
+// Prototypes of the library functions that take or return a double, so that arguments and results are converted.
+static void addBuiltinSigs() {
+    static const char* const unary[] = {"sqrt", "fabs", "floor", "ceil", "round", "exp", "log", "log10", "sin", "cos", "tan"};
+    static const char* const binary[] = {"pow", "fmod", "atan2"};
+    Type d = makeType("double");
+    for (size_t i = 0; i < sizeof(unary) / sizeof(unary[0]); ++i) {
+        FuncSig sig;
+        Param a;
+        a.type = "double";
+        a.ty = d;
+        sig.params.push_back(a);
+        sig.ret = d;
+        sig.builtin = true;
+        funcSigs[unary[i]] = sig;
+    }
+    for (size_t i = 0; i < sizeof(binary) / sizeof(binary[0]); ++i) {
+        FuncSig sig;
+        Param a;
+        a.type = "double";
+        a.ty = d;
+        sig.params.push_back(a);
+        sig.params.push_back(a);
+        sig.ret = d;
+        sig.builtin = true;
+        funcSigs[binary[i]] = sig;
+    }
+    FuncSig af;
+    Param s;
+    s.type = "char";
+    s.ptr = 1;
+    s.ty = makeType("char", 1, 0, false, true);
+    af.params.push_back(s);
+    af.ret = d;
+    af.builtin = true;
+    funcSigs["atof"] = af;
+}
+
+// Forget everything between two compilations (the program and the runtime library are compiled one after the other).
 static void resetState() {
     scopes.assign(1, std::map<std::string, Symbol>());
     cur_func.clear();
@@ -2332,6 +2428,7 @@ static void resetState() {
     continue_stack = std::stack<std::string>();
     arg_stack = std::stack<CallFrame>();
     funcSigs.clear();
+    addBuiltinSigs();
     calledBeforeDecl.clear();
     implicitWarned.clear();
     cur_returns_ref = false;
@@ -3189,7 +3286,7 @@ primary_expression
     : IDENTIFIER        { $$ = identOp($1); }
     | INTEGER_LITERAL   { $$ = typedOp($1, makeType("int")); }
     | HEX_LITERAL       { $$ = typedOp($1, makeType("int")); }
-    | FLOAT_LITERAL     { $$ = typedOp($1, makeType("double")); }
+    | FLOAT_LITERAL     { $$ = floatLiteral($1); }
     | CHAR_LITERAL      { $$ = typedOp($1, makeType("char")); }
     | string_literal    { $$ = typedOp($1, makeType("char", 1)); $$->isStr = true; }
     | KW_TRUE           { $$ = typedOp("1", makeType("bool")); }

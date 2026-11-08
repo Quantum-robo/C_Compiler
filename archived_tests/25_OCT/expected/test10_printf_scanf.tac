@@ -27,13 +27,14 @@ main:
     PushParam "Sum = %d, Product = %d\n"
     t10 = LCall printf
     PopParams 3
+    t11 = f
     PushParam name
-    PushParam f
+    PushParam t11
     PushParam "Float: %f Name: %s\n"
-    t11 = LCall printf
+    t12 = LCall printf
     PopParams 3
     PushParam "Done\n"
-    t12 = LCall printf
+    t13 = LCall printf
     PopParams 1
     Return 0
     EndFunc

@@ -114,15 +114,20 @@ Variable kinds that the code generator must tell apart when it uses a name as an
 * Arguments are pushed right to left, so the first argument is on top of the stack at the call.
 * For a method call the object address is pushed last: `this` is parameter 0.
 * A reference parameter receives an address. A struct parameter is pushed as a copy of the whole object.
-* The result is in `$v0`; a function returning `T&` returns an address.
+* The result is in `$v0` (in `$f0`, as a double, for a function returning `float` / `double`); a function returning
+  `T&` returns an address. A `double` argument takes two words, a `float` argument one.
 * `printf`, `scanf` and any other undeclared function are called like any other; the callee reads its arguments
   from the stack. The runtime library provides them (see [MIPS.md](MIPS.md)); the IR relies on `malloc`, `free` and
   `strcpy` for `new`, `delete` and string initialisers.
 
 ## 7. Known limits
 
-* `float` and `double` are typed correctly (sizes 4 and 8) but the arithmetic is still integer-only; floating point is
-  a stretch goal.
+* Floating point: operators carry no type; the code generator looks at the operands (a floating literal, or a variable
+  or temporary of type `float` / `double`) and chooses floating or integer instructions, converting between `int`,
+  `float` and `double` on a copy (`x = y`). The front end adds the conversion copies that cannot be seen from the
+  operands: an argument is converted to its parameter type (a `float` passed to a function without a prototype, such as
+  `printf`, becomes a `double`) and a cast is a copy into a temporary of the target type. A `float` in memory carries
+  the size tag `:f4` (`*p = x :f4`, `a[i] :f4`), a `double` has `:8`. `unsigned` and `long double` are not supported.
 * Pointer arithmetic on a pointer to an array (`int (*p)[3]`) is approximate (a multi-dimensional array name is handled).
 * An array size must be an integer constant (a literal, an enumerator, or a `const int` with a constant value).
 * A function pointer is an untyped 4-byte address.

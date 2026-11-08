@@ -29,20 +29,26 @@ rt_sys_sbrk:                    # char *__sys_sbrk(int bytes): grows the heap
     syscall
     jr   $ra
 
+rt_sys_sqrt:                    # double __sys_sqrt(double x): the argument is at 0($sp), the result in $f0
+    lwc1 $f0, 0($sp)
+    lwc1 $f1, 4($sp)
+    sqrt.d $f0, $f0
+    jr   $ra
+
 rt_sys_exit:                    # void __sys_exit(int status)
     lw   $a0, 0($sp)
     li   $v0, 17
     syscall
 )ASM";
 
-// The library proper. Rules for this source: it is compiled by this compiler (no casts, no floating point,
-// no variadic functions); a variadic function takes its first parameter normally and finds the other
+// The library proper. Rules for this source: it is compiled by this compiler (no variadic functions); a variadic function takes its first parameter normally and finds the other
 // arguments on the stack behind it; a function is defined before it is used.
 const char* const kRuntimeSource = R"RTC(
 void __sys_putchar(int c);
 void __sys_readline(char *buf, int n);
 char *__sys_sbrk(int n);
 void __sys_exit(int code);
+double __sys_sqrt(double x);
 
 /* ------------------------------ characters ------------------------------ */
 
@@ -384,8 +390,357 @@ int rt_digits(int v, int base, int upper, char *out) {
     return n;
 }
 
-/* The formatting engine behind printf, sprintf and snprintf: %d %i %u %x %X %o %c %s %p %% with flags - 0 + space,
-   a width (or *) and .precision for %s. "ap" points at the first argument; returns the number of characters. */
+/* ------------------------------ floating point -------------------------- */
+
+double fabs(double x) {
+    if (x < 0.0) return -x;
+    return x;
+}
+
+double rt_pow10(int n) {
+    double r = 1.0;
+    double b = 10.0;
+    while (n > 0) {
+        if (n & 1) r = r * b;
+        b = b * b;
+        n = n >> 1;
+    }
+    return r;
+}
+
+/* x with the fraction cut off (toward zero); works beyond the range of int */
+double rt_trunc(double x) {
+    if (x < 0.0) return -rt_trunc(-x);
+    if (x < 2147483647.0) return (double)(int)x;
+    if (x >= 4503599627370496.0) return x;
+    double hi = rt_trunc(x / 1073741824.0);
+    return hi * 1073741824.0 + (double)(int)(x - hi * 1073741824.0);
+}
+
+double floor(double x) {
+    double t = rt_trunc(x);
+    if (t > x) return t - 1.0;
+    return t;
+}
+
+double ceil(double x) {
+    double t = rt_trunc(x);
+    if (t < x) return t + 1.0;
+    return t;
+}
+
+double round(double x) {
+    if (x < 0.0) return -floor(-x + 0.5);
+    return floor(x + 0.5);
+}
+
+double fmod(double a, double b) {
+    if (b == 0.0) return 0.0;
+    return a - rt_trunc(a / b) * b;
+}
+
+double sqrt(double x) { return __sys_sqrt(x); }
+
+double exp(double x) {
+    int k = (int)floor(x / 0.6931471805599453 + 0.5);
+    double r = x - k * 0.6931471805599453;
+    double term = 1.0;
+    double sum = 1.0;
+    int i;
+    for (i = 1; i < 25; i++) {
+        term = term * r / i;
+        sum = sum + term;
+    }
+    while (k > 0) {
+        sum = sum * 2.0;
+        k--;
+    }
+    while (k < 0) {
+        sum = sum / 2.0;
+        k++;
+    }
+    return sum;
+}
+
+double log(double x) {
+    int k = 0;
+    int i;
+    double y, s2, term, sum;
+    if (x <= 0.0) return -1.0e308 * 10.0;
+    while (x >= 2.0) {
+        x = x / 2.0;
+        k++;
+    }
+    while (x < 1.0) {
+        x = x * 2.0;
+        k--;
+    }
+    y = (x - 1.0) / (x + 1.0);
+    s2 = y * y;
+    term = y;
+    sum = 0.0;
+    for (i = 1; i < 60; i += 2) {
+        sum = sum + term / i;
+        term = term * s2;
+    }
+    return 2.0 * sum + k * 0.6931471805599453;
+}
+
+double log10(double x) { return log(x) / 2.302585092994046; }
+
+double pow(double x, double y) {
+    int n = (int)y;
+    if ((double)n == y) {
+        double r = 1.0;
+        double b = x;
+        int neg = 0;
+        if (n < 0) {
+            neg = 1;
+            n = -n;
+        }
+        while (n > 0) {
+            if (n & 1) r = r * b;
+            b = b * b;
+            n = n >> 1;
+        }
+        if (neg) return 1.0 / r;
+        return r;
+    }
+    if (x <= 0.0) return 0.0;
+    return exp(y * log(x));
+}
+
+/* x brought into [-pi, pi] */
+double rt_reduce(double x) {
+    double twopi = 6.283185307179586;
+    x = x - rt_trunc(x / twopi) * twopi;
+    if (x > 3.141592653589793) x = x - twopi;
+    if (x < -3.141592653589793) x = x + twopi;
+    return x;
+}
+
+double sin(double x) {
+    double x2, term, sum;
+    int i;
+    x = rt_reduce(x);
+    x2 = x * x;
+    term = x;
+    sum = x;
+    for (i = 1; i < 14; i++) {
+        term = -term * x2 / ((2 * i) * (2 * i + 1));
+        sum = sum + term;
+    }
+    return sum;
+}
+
+double cos(double x) {
+    double x2, term, sum;
+    int i;
+    x = rt_reduce(x);
+    x2 = x * x;
+    term = 1.0;
+    sum = 1.0;
+    for (i = 1; i < 14; i++) {
+        term = -term * x2 / ((2 * i - 1) * (2 * i));
+        sum = sum + term;
+    }
+    return sum;
+}
+
+double tan(double x) { return sin(x) / cos(x); }
+
+/* strtod / atof: sign, digits, '.', digits, e[+-]digits; end (if not 0) is set past the number */
+double strtod(char *s, char **end) {
+    double v = 0.0;
+    int neg = 0, digits = 0, frac = 0, e = 0, eneg = 0;
+    char *p = s;
+    while (isspace(*p)) p++;
+    if (*p == '-' || *p == '+') {
+        neg = *p == '-';
+        p++;
+    }
+    while (isdigit(*p)) {
+        v = v * 10.0 + (*p - '0');
+        p++;
+        digits++;
+    }
+    if (*p == '.') {
+        p++;
+        while (isdigit(*p)) {
+            v = v * 10.0 + (*p - '0');
+            p++;
+            frac++;
+            digits++;
+        }
+    }
+    if (digits == 0) {
+        if (end != 0) *end = s;
+        return 0.0;
+    }
+    if (*p == 'e' || *p == 'E') {
+        char *q = p + 1;
+        if (*q == '-' || *q == '+') {
+            eneg = *q == '-';
+            q++;
+        }
+        if (isdigit(*q)) {
+            while (isdigit(*q)) {
+                e = e * 10 + (*q - '0');
+                q++;
+            }
+            p = q;
+            if (eneg) e = -e;
+        }
+    }
+    e = e - frac;
+    if (e < 0) v = v / rt_pow10(-e);
+    else v = v * rt_pow10(e);
+    if (neg) v = -v;
+    if (end != 0) *end = p;
+    return v;
+}
+
+double atof(char *s) { return strtod(s, 0); }
+
+/* The error of the product p = a * b as rounded to a double (Dekker): a * b = p + error, exactly. */
+double rt_prod_err(double a, double b, double p) {
+    double c = 134217729.0;
+    double t = c * a;
+    double ah = t - (t - a);
+    double al = a - ah;
+    double bh, bl;
+    t = c * b;
+    bh = t - (t - b);
+    bl = b - bh;
+    return ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+}
+
+/* The digits of x (finite, not negative) with prec decimals, rounded to nearest (ties to even); returns the length */
+int rt_fixed(double x, int prec, char *out) {
+    char tmp[340];
+    double ip = rt_trunc(x);
+    double scale, scaled, rs, diff, q;
+    int n = 0, i, d, len;
+    if (prec > 30) prec = 30;
+    scale = rt_pow10(prec);
+    scaled = (x - ip) * scale;
+    rs = rt_trunc(scaled);
+    diff = scaled - rs;
+    if (diff > 0.5) {
+        rs = rs + 1.0;
+    } else if (diff == 0.5) {                    /* a tie only if the product was exact; otherwise look at its error */
+        double err = rt_prod_err(x - ip, scale, scaled);
+        double last = prec == 0 ? ip : rs;           /* the digit that decides "to even" */
+        if (err > 0.0 || (err == 0.0 && rt_trunc(last / 2.0) * 2.0 != last)) rs = rs + 1.0;
+    }
+    if (rs >= scale) {
+        rs = rs - scale;
+        ip = ip + 1.0;
+    }
+    if (ip < 1.0) {
+        tmp[n] = '0';
+        n++;
+    }
+    while (ip >= 1.0) {
+        q = rt_trunc(ip / 10.0);
+        d = (int)(ip - q * 10.0);
+        tmp[n] = '0' + d;
+        n++;
+        ip = q;
+    }
+    for (i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    len = n;
+    if (prec > 0) {
+        out[len] = '.';
+        len++;
+        for (i = prec - 1; i >= 0; i--) {
+            q = rt_trunc(rs / 10.0);
+            d = (int)(rs - q * 10.0);
+            out[len + i] = '0' + d;
+            rs = q;
+        }
+        len = len + prec;
+    }
+    return len;
+}
+
+/* d.ddde+XX with prec decimals; returns the length */
+int rt_expo(double x, int prec, int upper, char *out) {
+    int e = 0, len, ex;
+    double m = x;
+    if (x != 0.0) {
+        if (x >= 1.0) {
+            while (x >= rt_pow10(e + 1)) e++;
+            m = x / rt_pow10(e);
+        } else {
+            while (x * rt_pow10(-e) < 1.0) e--;
+            m = x * rt_pow10(-e);
+        }
+    }
+    len = rt_fixed(m, prec, out);
+    if (len - (prec > 0 ? prec + 1 : 0) > 1) {                 /* rounded up to 10.0 */
+        e++;
+        len = rt_fixed(1.0, prec, out);
+    }
+    out[len] = upper ? 'E' : 'e';
+    len++;
+    if (e < 0) {
+        out[len] = '-';
+        e = -e;
+    } else {
+        out[len] = '+';
+    }
+    len++;
+    ex = e;
+    if (ex >= 100) {
+        out[len] = '0' + ex / 100;
+        len++;
+        ex = ex % 100;
+    }
+    out[len] = '0' + ex / 10;
+    out[len + 1] = '0' + ex % 10;
+    return len + 2;
+}
+
+/* %g: the shorter of %e and %f style for prec significant digits, without trailing zeros */
+int rt_general(double x, int prec, int upper, char *out) {
+    int P = prec;
+    int len, i, at, j, dot, X, eneg;
+    if (P < 0) P = 6;
+    if (P == 0) P = 1;
+    len = rt_expo(x, P - 1, upper, out);
+    at = 0;
+    while (out[at] != 'e' && out[at] != 'E') at++;
+    X = 0;
+    eneg = out[at + 1] == '-';
+    for (i = at + 2; i < len; i++) X = X * 10 + (out[i] - '0');
+    if (eneg) X = -X;
+    if (X < -4 || X >= P) {
+        dot = 0;
+        for (i = 0; i < at; i++) if (out[i] == '.') dot = 1;
+        j = at;
+        if (dot) {
+            while (out[j - 1] == '0') j--;
+            if (out[j - 1] == '.') j--;
+        }
+        for (i = at; i < len; i++) {
+            out[j] = out[i];
+            j++;
+        }
+        return j;
+    }
+    len = rt_fixed(x, P - 1 - X, out);
+    dot = 0;
+    for (i = 0; i < len; i++) if (out[i] == '.') dot = 1;
+    if (dot) {
+        while (out[len - 1] == '0') len--;
+        if (out[len - 1] == '.') len--;
+    }
+    return len;
+}
+
+/* The formatting engine behind printf, sprintf and snprintf: %d %i %u %x %X %o %c %s %p %f %e %g %% with flags - 0 + space,
+   a width (or *) and .precision. "ap" points at the first argument; returns the number of characters. */
 int rt_format(char *fmt, void *ap) {
     int count = 0;
     while (*fmt != 0) {
@@ -426,7 +781,7 @@ int rt_format(char *fmt, void *ap) {
                 fmt++;
             }
         }
-        while (*fmt == 'l' || *fmt == 'h') fmt++;
+        while (*fmt == 'l' || *fmt == 'h' || *fmt == 'L') fmt++;
         int spec = *fmt;
         if (spec == 0) break;
         fmt++;
@@ -468,6 +823,42 @@ int rt_format(char *fmt, void *ap) {
             int *ip = slot;
             buf[0] = *ip;
             count += rt_emit(buf, 1, 0, width, left, 0);
+        } else if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') {
+            double *dp = slot;
+            double v = *dp;
+            int sign = 0, len, p = prec;
+            char fb[360];
+            ap = ap + 4;                                  /* a double takes two words */
+            if (p < 0) p = 6;
+            if (v < 0.0 || (v == 0.0 && 1.0 / v < 0.0)) {     /* also -0.0 */
+                sign = '-';
+                v = -v;
+            } else if (plus) {
+                sign = '+';
+            } else if (space) {
+                sign = ' ';
+            }
+            if (v != v) {
+                fb[0] = 'n';
+                fb[1] = 'a';
+                fb[2] = 'n';
+                len = 3;
+                zero = 0;
+            } else if (v - v != 0.0) {
+                fb[0] = 'i';
+                fb[1] = 'n';
+                fb[2] = 'f';
+                len = 3;
+                zero = 0;
+            } else if (spec == 'f' || spec == 'F') {
+                len = rt_fixed(v, p, fb);
+            } else if (spec == 'e' || spec == 'E') {
+                len = rt_expo(v, p, spec == 'E', fb);
+            } else {
+                len = rt_general(v, prec, spec == 'G', fb);
+            }
+            if (left) zero = 0;
+            count += rt_emit(fb, len, sign, width, left, zero);
         } else if (spec == 's') {
             char **sp = slot;
             char *s = *sp;
@@ -579,7 +970,7 @@ int scanf(char *fmt) {
             continue;
         }
         fmt++;
-        int suppress = 0, width = 0, half = 0;
+        int suppress = 0, width = 0, half = 0, lng = 0;
         if (*fmt == '*') {
             suppress = 1;
             fmt++;
@@ -590,6 +981,7 @@ int scanf(char *fmt) {
         }
         while (*fmt == 'l' || *fmt == 'h') {
             if (*fmt == 'h') half = 1;
+            else lng = 1;
             fmt++;
         }
         int spec = *fmt;
@@ -643,6 +1035,66 @@ int scanf(char *fmt) {
             rt_ungetc(c);
             if (!suppress) {
                 d[len] = 0;
+                assigned++;
+            }
+            continue;
+        }
+        if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') {
+            char nb[64];
+            int n = 0, seen = 0;
+            if (c == '-' || c == '+') {
+                nb[n] = c;
+                n++;
+                c = getchar();
+            }
+            while (c >= 0 && isdigit(c) && n < 60 && (width == 0 || n < width)) {
+                nb[n] = c;
+                n++;
+                seen++;
+                c = getchar();
+            }
+            if (c == '.' && n < 60) {
+                nb[n] = c;
+                n++;
+                c = getchar();
+                while (c >= 0 && isdigit(c) && n < 60 && (width == 0 || n < width)) {
+                    nb[n] = c;
+                    n++;
+                    seen++;
+                    c = getchar();
+                }
+            }
+            if (seen > 0 && (c == 'e' || c == 'E')) {
+                nb[n] = c;
+                n++;
+                c = getchar();
+                if (c == '-' || c == '+') {
+                    nb[n] = c;
+                    n++;
+                    c = getchar();
+                }
+                while (c >= 0 && isdigit(c) && n < 60) {
+                    nb[n] = c;
+                    n++;
+                    c = getchar();
+                }
+            }
+            rt_ungetc(c);
+            if (seen == 0) break;
+            nb[n] = 0;
+            if (!suppress) {
+                double v = strtod(nb, 0);
+                void *slot = ap;
+                ap = ap + 4;
+                if (lng) {
+                    double **dp = slot;
+                    double *d = *dp;
+                    *d = v;
+                } else {
+                    float **fp = slot;
+                    float *fl = *fp;
+                    *fl = v;
+                }
                 assigned++;
             }
             continue;

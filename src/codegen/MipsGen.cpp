@@ -33,6 +33,8 @@ struct Loc {
     bool aggr = false;         // struct / class / union object: copied as a whole
     bool array = false;        // array object: its name is its address
     bool isRef = false;
+    int fp = 0;                // floating point scalar: 1 = float (4 bytes), 2 = double (8 bytes)
+    bool isBool = false;       // a bool: any nonzero value stored into it becomes 1
 };
 
 long roundUp(long v, long a) { return (v + a - 1) / a * a; }
@@ -118,6 +120,15 @@ bool looksLikeFloat(const std::string& op) {
            op.compare(i, 2, "0x") != 0 && op.compare(i, 2, "0X") != 0;
 }
 
+// A floating literal's value; an 'f' suffix rounds it to single precision.
+double floatValue(const std::string& op) {
+    std::string t = op;
+    bool single = false;
+    if (!t.empty() && (t[t.size() - 1] == 'f' || t[t.size() - 1] == 'F')) { single = true; t.erase(t.size() - 1); }
+    double v = strtod(t.c_str(), nullptr);
+    return single ? (double)(float)v : v;
+}
+
 // Names a program may use without declaring them (they normally come from headers).
 bool builtinConstant(const std::string& n, long& v) {
     static const std::map<std::string, long> t = {
@@ -187,6 +198,18 @@ private:
     bool isFunc(const std::string& name) const { return userFuncs.count(name) || externs.count(name); }
     std::string stringLabelFor(const std::string& lit);
 
+    // floating point: every value is computed as a double ($f0, $f2); float objects are converted on load / store
+    std::vector<double> fpPool;                    // literals, labelled pfx + "D_" + index
+    int fpLabels = 0;
+    bool retFp = false;                            // the current function returns float / double
+    int fpKind(const std::string& op) const;       // 0 integer, 1 float, 2 double
+    std::string fpLiteralLabel(double v);
+    std::string slotRef(const Loc& l, int extra);  // memory operand for word 'extra' bytes into a variable
+    void loadFp(const std::string& op, int reg);   // value of the operand as a double in $f<reg>
+    void storeFp(int reg, const std::string& name);// $f<reg> converted to the variable's type
+    void loadFpFromAddr(int sz);                   // the float / double at ($t0) into $f0
+    void genFpBinary(const TACInstruction& in);
+    void flagIfZero(const std::string& op);
     bool loadValue(const std::string& op, const char* reg);
     bool addrOfName(const std::string& name, const char* reg);
     void storeValue(const char* reg, const std::string& name);
@@ -234,7 +257,9 @@ Loc Gen::makeLoc(const VarInfo& v) const {
         l.bytes = s;
         l.access = (v.isParam || s >= 4) ? 4 : (int)s;      // arguments are pushed as whole words
         if (l.bytes < 4) l.bytes = 4;
-        if (l.bytes > 4) l.access = 4;                       // double: not supported yet
+        if (l.bytes > 4) l.access = 4;
+        if (isFloating(v.ty)) l.fp = v.ty.base == "float" ? 1 : 2;
+        l.isBool = v.ty.base == "bool" && v.ty.ptr == 0 && !v.ty.aggr;
     }
     if (l.bytes < 1) l.bytes = 1;
     return l;
@@ -261,10 +286,11 @@ bool Gen::loadValue(const std::string& op, const char* reg) {
     long v;
     if (parseLiteral(op, v)) { ins(std::string("li ") + reg + ", " + std::to_string(v)); return true; }
     if (!op.empty() && op[0] == '"') { ins(std::string("la ") + reg + ", " + stringLabelFor(op)); return true; }
-    if (looksLikeFloat(op)) {
-        error("floating-point values are not supported yet (" + op + ")");
-        ins(std::string("li ") + reg + ", 0");
-        return false;
+    if (fpKind(op) != 0) {                           // a floating value used as an integer: truncate
+        loadFp(op, 0);
+        ins("trunc.w.d $f4, $f0");
+        ins(std::string("mfc1 ") + reg + ", $f4");
+        return true;
     }
     const Loc* l = find(op);
     if (l) {
@@ -339,6 +365,127 @@ void Gen::emitCopy(long n) {
     ins("bnez $t7, " + l);
 }
 
+// ---- floating point -------------------------------------------------------------------------------------
+// Values are computed as doubles in $f0 / $f2. A variable of type float is kept in single format and converted
+// when it is loaded or stored; an integer operand is converted when it meets a floating one, and a floating
+// value stored into an integer variable is truncated. Doubles are moved as two words (lwc1 / swc1), so they
+// need no 8-byte alignment.
+
+// 0 for an integer operand, 1 for a float, 2 for a double (a floating literal or a variable / temporary).
+int Gen::fpKind(const std::string& op) const {
+    if (looksLikeFloat(op)) {
+        char last = op[op.size() - 1];
+        return (last == 'f' || last == 'F') ? 1 : 2;
+    }
+    const Loc* l = find(op);
+    return (l && !l->array && !l->aggr) ? l->fp : 0;
+}
+
+std::string Gen::fpLiteralLabel(double v) {
+    for (size_t i = 0; i < fpPool.size(); ++i)
+        if (memcmp(&fpPool[i], &v, sizeof(double)) == 0) return pfx + "D_" + std::to_string(i);
+    fpPool.push_back(v);
+    return pfx + "D_" + std::to_string(fpPool.size() - 1);
+}
+
+// Memory operand for the word 'extra' bytes into a variable.
+std::string Gen::slotRef(const Loc& l, int extra) {
+    if (l.global) return extra ? l.label + "+" + std::to_string(extra) : l.label;
+    return frameRef(l.off + extra);
+}
+
+// The operand converted to a double in the register pair $f<reg>, $f<reg+1>.
+void Gen::loadFp(const std::string& op, int reg) {
+    std::string lo = "$f" + std::to_string(reg), hi = "$f" + std::to_string(reg + 1);
+    int k = fpKind(op);
+    if (k != 0 && looksLikeFloat(op)) {
+        ins("la $t9, " + fpLiteralLabel(floatValue(op)));
+        ins("lwc1 " + lo + ", 0($t9)");
+        ins("lwc1 " + hi + ", 4($t9)");
+    } else if (k == 0) {                             // an integer
+        loadValue(op, "$t8");
+        ins("mtc1 $t8, " + lo);
+        ins("cvt.d.w " + lo + ", " + lo);
+    } else if (k == 2) {
+        const Loc* l = find(op);
+        ins("lwc1 " + lo + ", " + slotRef(*l, 0));
+        ins("lwc1 " + hi + ", " + slotRef(*l, 4));
+    } else {                                         // a float
+        const Loc* l = find(op);
+        ins("lwc1 " + lo + ", " + slotRef(*l, 0));
+        ins("cvt.d.s " + lo + ", " + lo);
+    }
+}
+
+// The double in $f<reg> stored into a variable, converted to the type of the variable.
+void Gen::storeFp(int reg, const std::string& name) {
+    const Loc* l = find(name);
+    if (!l) { error("cannot assign to '" + name + "'"); return; }
+    std::string lo = "$f" + std::to_string(reg), hi = "$f" + std::to_string(reg + 1);
+    if (l->fp == 2) {
+        ins("swc1 " + lo + ", " + slotRef(*l, 0));
+        ins("swc1 " + hi + ", " + slotRef(*l, 4));
+    } else if (l->fp == 1) {
+        ins("cvt.s.d $f4, " + lo);
+        ins("swc1 $f4, " + slotRef(*l, 0));
+    } else if (l->isBool) {                          // bool b = 0.25 is true
+        std::string done = pfx + "fc_" + std::to_string(fpLabels++);
+        ins("mtc1 $zero, $f6");
+        ins("mtc1 $zero, $f7");
+        ins("c.eq.d " + lo + ", $f6");
+        ins("li $t0, 0");
+        ins("bc1t " + done);
+        ins("li $t0, 1");
+        label(done);
+        storeValue("$t0", name);
+    } else {
+        ins("trunc.w.d $f4, " + lo);
+        ins("mfc1 $t0, $f4");
+        storeValue("$t0", name);
+    }
+}
+
+// The float (sz = -4) or double (sz = 8) at the address in $t0, as a double in $f0.
+void Gen::loadFpFromAddr(int sz) {
+    ins("lwc1 $f0, 0($t0)");
+    if (sz == 8) ins("lwc1 $f1, 4($t0)");
+    else ins("cvt.d.s $f0, $f0");
+}
+
+// Arithmetic and comparisons with at least one floating operand. A comparison yields 0 or 1 in an integer.
+void Gen::genFpBinary(const TACInstruction& in) {
+    const std::string& op = in.op;
+    loadFp(in.arg1, 0);
+    loadFp(in.arg2, 2);
+    if (op == "+" || op == "-" || op == "*" || op == "/") {
+        ins(std::string(op == "+" ? "add.d" : op == "-" ? "sub.d" : op == "*" ? "mul.d" : "div.d") + " $f0, $f0, $f2");
+        storeFp(0, in.result);
+        return;
+    }
+    bool swap = op == ">" || op == ">=";
+    const char* cmp = (op == "<" || op == ">") ? "c.lt.d" : (op == "<=" || op == ">=") ? "c.le.d" : "c.eq.d";
+    bool negate = op == "!=";
+    if (op != "<" && op != ">" && op != "<=" && op != ">=" && op != "==" && op != "!=") {
+        error("operator '" + op + "' needs integer operands");
+        return;
+    }
+    std::string done = pfx + "fc_" + std::to_string(fpLabels++);
+    ins(std::string(cmp) + (swap ? " $f2, $f0" : " $f0, $f2"));
+    ins(negate ? "li $t0, 0" : "li $t0, 1");
+    ins("bc1t " + done);
+    ins(negate ? "li $t0, 1" : "li $t0, 0");
+    label(done);
+    storeValue("$t0", in.result);
+}
+
+// Sets the coprocessor flag when the floating operand equals 0.0 (used by if, ifFalse and !).
+void Gen::flagIfZero(const std::string& op) {
+    loadFp(op, 0);
+    ins("mtc1 $zero, $f2");
+    ins("mtc1 $zero, $f3");
+    ins("c.eq.d $f0, $f2");
+}
+
 // Start a function: lay out its stack frame (parameters at positive offsets from $fp, then locals and
 // temporaries below it), then emit the label and the prologue that saves $ra and $fp and reserves the frame.
 // 'hidden' is set for a function returning a struct by value, which receives the result address as an extra
@@ -349,11 +496,12 @@ void Gen::beginFunction(const FuncInfo& f, bool hidden) {
     hiddenRet = hidden;
     fname = sanitize(f.name);
 
+    retFp = !f.returnsRef && isFloating(f.ret);
     int paramOff = 8 + (hidden ? 4 : 0);
     for (size_t i = 0; i < f.params.size(); ++i) {
         Loc l = makeLoc(f.params[i]);
         l.off = paramOff;
-        paramOff += (int)(l.aggr ? roundUp(l.bytes, 4) : 4);
+        paramOff += (int)(l.aggr ? roundUp(l.bytes, 4) : (l.fp == 2 ? 8 : 4));
         locs[f.params[i].name] = l;
     }
     long cur = 0;
@@ -370,6 +518,9 @@ void Gen::beginFunction(const FuncInfo& f, bool hidden) {
             l.aggr = true;
             l.bytes = layouts.baseSize(t);
             if (l.bytes < 1) l.bytes = 1;
+        } else if (isFloating(t)) {
+            l.fp = t.base == "float" ? 1 : 2;
+            l.bytes = l.fp == 2 ? 8 : 4;
         }
         cur += roundUp(l.bytes, 4);
         l.off = (int)-cur;
@@ -404,6 +555,11 @@ void Gen::loadFromAddr(const std::string& result, int sz) {
         emitCopy(r->bytes);
         return;
     }
+    if (sz == 8 || sz == -4) {                       // double / float
+        loadFpFromAddr(sz);
+        storeFp(0, result);
+        return;
+    }
     ins(std::string(sz == 1 ? "lb" : (sz == 2 ? "lh" : "lw")) + " $t0, 0($t0)");
     storeValue("$t0", result);
 }
@@ -413,13 +569,14 @@ void Gen::genLoadMem(const TACInstruction& in, bool indexed, bool addrOnly) {
     if (indexed) {
         loadValue(in.arg1, "$t0");
         loadValue(in.arg2, "$t1");
-        if (in.sz > 1) {
-            if ((in.sz & (in.sz - 1)) == 0) {
+        int esz = in.sz < 0 ? -in.sz : in.sz;
+        if (esz > 1) {
+            if ((esz & (esz - 1)) == 0) {
                 int sh = 0;
-                while ((1 << sh) < in.sz) ++sh;
+                while ((1 << sh) < esz) ++sh;
                 ins("sll $t1, $t1, " + std::to_string(sh));
             } else {
-                ins("li $t2, " + std::to_string(in.sz));
+                ins("li $t2, " + std::to_string(esz));
                 ins("mul $t1, $t1, $t2");
             }
         }
@@ -439,13 +596,14 @@ void Gen::genStoreMem(const TACInstruction& in, bool indexed) {
     if (indexed) {
         loadValue(in.arg1, "$t1");
         loadValue(in.arg2, "$t2");
-        if (in.sz > 1) {
-            if ((in.sz & (in.sz - 1)) == 0) {
+        int esz = in.sz < 0 ? -in.sz : in.sz;
+        if (esz > 1) {
+            if ((esz & (esz - 1)) == 0) {
                 int sh = 0;
-                while ((1 << sh) < in.sz) ++sh;
+                while ((1 << sh) < esz) ++sh;
                 ins("sll $t2, $t2, " + std::to_string(sh));
             } else {
-                ins("li $t3, " + std::to_string(in.sz));
+                ins("li $t3, " + std::to_string(esz));
                 ins("mul $t2, $t2, $t3");
             }
         }
@@ -460,6 +618,17 @@ void Gen::genStoreMem(const TACInstruction& in, bool indexed) {
         emitCopy(v->bytes);
         return;
     }
+    if (in.sz == 8 || in.sz == -4) {                 // a double / float in memory
+        loadFp(value, 0);
+        if (in.sz == 8) {
+            ins("swc1 $f0, 0($t1)");
+            ins("swc1 $f1, 4($t1)");
+        } else {
+            ins("cvt.s.d $f4, $f0");
+            ins("swc1 $f4, 0($t1)");
+        }
+        return;
+    }
     loadValue(value, "$t0");
     ins(std::string(in.sz == 1 ? "sb" : (in.sz == 2 ? "sh" : "sw")) + " $t0, 0($t1)");
 }
@@ -468,6 +637,20 @@ void Gen::genStoreMem(const TACInstruction& in, bool indexed) {
 // $t0 / $t1, the result is computed in $t0 and stored back. Comparisons are built from slt, sltu and subu.
 void Gen::genBinary(const TACInstruction& in) {
     const std::string& op = in.op;
+    if (in.arg2.empty() && op == "!" && fpKind(in.arg1) != 0) {   // !x for a floating x: x == 0.0
+        std::string done = pfx + "fc_" + std::to_string(fpLabels++);
+        flagIfZero(in.arg1);
+        ins("li $t0, 1");
+        ins("bc1t " + done);
+        ins("li $t0, 0");
+        label(done);
+        storeValue("$t0", in.result);
+        return;
+    }
+    if (!in.arg2.empty() && (fpKind(in.arg1) != 0 || fpKind(in.arg2) != 0)) {
+        genFpBinary(in);
+        return;
+    }
     if (in.arg2.empty()) {                           // unary: ~ !
         loadValue(in.arg1, "$t0");
         if (op == "~") ins("not $t0, $t0");
@@ -516,7 +699,10 @@ void Gen::genCall(const TACInstruction& in) {
     }
     if (pending > 0) ins("addiu $sp, $sp, " + std::to_string(pending));
     pending = 0;
-    if (res && !aggrRet) storeValue("$v0", in.result);
+    if (res && !aggrRet) {
+        if (res->fp) storeFp(0, in.result);          // floating results come back in $f0
+        else storeValue("$v0", in.result);
+    }
 }
 
 void Gen::genReturn(const TACInstruction& in) {
@@ -528,6 +714,8 @@ void Gen::genReturn(const TACInstruction& in) {
             ins("move $v1, $t1");
             emitCopy(v->bytes);
             ins("move $v0, $v1");
+        } else if (retFp) {
+            loadFp(in.arg1, 0);
         } else {
             loadValue(in.arg1, "$v0");
         }
@@ -545,8 +733,13 @@ void Gen::genInstr(const TACInstruction& in) {
     } else if (op == "goto") {
         ins("j " + (in.arg1 == "user" ? userLabel(in.result) : pfx + in.result));
     } else if (op == "if" || op == "ifFalse") {
-        loadValue(in.arg1, "$t0");
-        ins(std::string(op == "if" ? "bnez" : "beqz") + " $t0, " + pfx + in.result);
+        if (fpKind(in.arg1) != 0) {
+            flagIfZero(in.arg1);
+            ins(std::string(op == "if" ? "bc1f " : "bc1t ") + pfx + in.result);
+        } else {
+            loadValue(in.arg1, "$t0");
+            ins(std::string(op == "if" ? "bnez" : "beqz") + " $t0, " + pfx + in.result);
+        }
     } else if (op == "return") {
         genReturn(in);
     } else if (op == "param") {
@@ -558,6 +751,18 @@ void Gen::genInstr(const TACInstruction& in) {
             ins("move $t1, $sp");
             emitCopy(v->bytes);
             pending += r;
+        } else if (fpKind(in.arg1) == 2) {           // a double takes two words
+            loadFp(in.arg1, 0);
+            ins("addiu $sp, $sp, -8");
+            ins("swc1 $f0, 0($sp)");
+            ins("swc1 $f1, 4($sp)");
+            pending += 8;
+        } else if (fpKind(in.arg1) == 1) {           // a float
+            loadFp(in.arg1, 0);
+            ins("cvt.s.d $f4, $f0");
+            ins("addiu $sp, $sp, -4");
+            ins("swc1 $f4, 0($sp)");
+            pending += 4;
         } else {
             loadValue(in.arg1, "$t0");
             pushReg("$t0");
@@ -572,6 +777,9 @@ void Gen::genInstr(const TACInstruction& in) {
             addrOfName(in.arg1, "$t0");
             addrOfName(in.result, "$t1");
             emitCopy(r->bytes);
+        } else if ((r && r->fp) || fpKind(in.arg1) != 0) {   // conversion between int, float and double
+            loadFp(in.arg1, 0);
+            storeFp(0, in.result);
         } else {
             loadValue(in.arg1, "$t0");
             storeValue("$t0", in.result);
@@ -605,9 +813,15 @@ void Gen::genInstr(const TACInstruction& in) {
             ins("bnez $t7, " + l);
         }
     } else if (op == "uminus") {
-        loadValue(in.arg1, "$t0");
-        ins("subu $t0, $zero, $t0");
-        storeValue("$t0", in.result);
+        if (fpKind(in.arg1) != 0) {
+            loadFp(in.arg1, 0);
+            ins("neg.d $f0, $f0");
+            storeFp(0, in.result);
+        } else {
+            loadValue(in.arg1, "$t0");
+            ins("subu $t0, $zero, $t0");
+            storeValue("$t0", in.result);
+        }
     } else {
         genBinary(in);
     }
@@ -632,6 +846,11 @@ void Gen::emitData() {
     for (size_t i = 0; i < gv.size(); ++i) {
         const Loc& l = globals.find(gv[i].name)->second;
         data << "    .align 2\n" << l.label << ": .space " << roundUp(l.bytes, 4) << "\n";
+    }
+    for (size_t i = 0; i < fpPool.size(); ++i) {     // double literals: low word first
+        unsigned int w[2];
+        memcpy(w, &fpPool[i], sizeof(w));
+        data << "    .align 2\n" << pfx << "D_" << i << ": .word " << w[0] << ", " << w[1] << "\n";
     }
     for (size_t i = 0; i < strings.size(); ++i) {
         data << strings[i].first << ":";
@@ -742,7 +961,8 @@ std::set<std::string> reachable(const TACGenerator& unit, const std::set<std::st
 // Hand-written syscall stubs the runtime's C code calls (see Runtime.cpp).
 static const char* const kSysExterns[][2] = {
     {"__sys_putchar", "rt_sys_putchar"}, {"__sys_readline", "rt_sys_readline"},
-    {"__sys_sbrk", "rt_sys_sbrk"},       {"__sys_exit", "rt_sys_exit"}};
+    {"__sys_sbrk", "rt_sys_sbrk"},       {"__sys_exit", "rt_sys_exit"},
+    {"__sys_sqrt", "rt_sys_sqrt"}};
 
 bool generateMips(const TACGenerator& prog, const LayoutTable& progLayouts, const TACGenerator& rt,
                   const LayoutTable& rtLayouts, FILE* out, std::vector<std::string>& errors) {

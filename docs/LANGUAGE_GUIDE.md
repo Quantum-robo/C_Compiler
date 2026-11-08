@@ -14,12 +14,12 @@ C++ but are **not supported**; each row shows what to write instead.
 | Inheritance, virtual functions, templates, operator overloading | `class B : public A { };`   | write the classes independently                     |
 | `typedef`                                       | `typedef int myint;`                        | use the underlying type (a `#define` works for a name) |
 | Function-like macros                            | `#define MAX(a, b) ...`                     | write a function                                    |
-| Floating point (`float`, `double`)              | `float f = 1.5;`                            | not yet supported by the code generator (see MIPS.md) |
 | Unsigned arithmetic                             | `unsigned int u;` is accepted but signed    | use `int`; `(unsigned char)` / `(unsigned short)` casts do mask |
 | Pointers to arrays                              | `int (*row)[3] = grid;`                     | `int *row = grid[1];` or index the array            |
 | `cond ? a : b` as an lvalue                     | `return c ? x : y;` in a function returning `int &` | use `if` / `else`                            |
 | Enumerator values that are not plain literals   | `enum E { A = 1 << 3 };`                    | `A = 8` (otherwise a warning, names stay in the IR) |
-| `sscanf`, `fprintf`, `fopen`, math functions     | `sqrt(2)`                                   | not provided by the runtime library                 |
+| `sscanf`, `fprintf`, `fopen`, `atan` / `asin` / `acos` / `atan2` | `atan(1.0)`                  | not provided by the runtime library                 |
+| `long double`                                   | `long double x;`                            | use `double`                                        |
 
 Also accepted since they are common: `class B;` forward declarations, anonymous `struct { } name;` / `union { } name;`
 members and anonymous `enum { A, B };`, casts `(int*)malloc(n)`, `(char)x`, `(bool)n`, and object-like macros
@@ -66,6 +66,29 @@ Account *p = new Account(5);     delete p;     Account list[3];     // every ele
   copy constructors are never called implicitly (a by-value copy copies the bytes, and a by-value parameter is
   destroyed when the function returns); a returned local object is moved out like a C++ return-value optimisation;
   static locals are constructed at program start, not at the first call; constructors defined outside the class body.
+
+## 1c. Floating point
+
+`float` (4 bytes) and `double` (8 bytes) work like in C: literals (`1.5`, `.5`, `2e3`, `1.5f`), arithmetic, comparisons,
+`++` / `--`, compound assignment, casts, conversions between `int`, `float` and `double` in assignments, arguments and
+`return`, arrays, structs, class members, pointers, references and `new double[n]`.
+
+```c
+double area(double r) { return 3.14159 * r * r; }
+float f = 0.1f;   double d = f;   int n = 9.99;            // d keeps the float rounding, n is 9
+printf("%.2f %8.3f %e %g
+", area(2), d, 12345.678, 0.0001);   // a float argument is passed as a double
+double x;  scanf("%lf", &x);   float y;  scanf("%f", &y);      // %lf stores a double, %f a float
+```
+
+* `printf` / `sprintf` / `snprintf` understand `%f %e %E %g %G` with flags, width and precision (default 6) and round
+  like glibc; `scanf` understands `%f %e %g` (with `l` for a double).
+* `math.h`: `sqrt`, `pow`, `fabs`, `floor`, `ceil`, `round`, `fmod`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, plus
+  `atof` and `strtod`. They are series approximations (about 10 correct decimals); they need no declaration.
+* The operators `% & | ^ ~ << >>` need integers (a floating operand is a semantic error); `switch` needs an integer, so
+  write `switch ((int)x)`. A floating value used as a condition is true when it is not 0.0; storing one into a `bool`
+  gives 0 or 1, into an integer it truncates toward zero.
+* Not supported: `long double`, `unsigned` floating types, `inf` / `nan` literals (`printf` prints `inf` and `nan`).
 
 ## 2. Enums
 

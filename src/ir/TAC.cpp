@@ -67,7 +67,8 @@ void TACGenerator::declareVar(const VarInfo& v) {
 
 // ": N" marks an access whose size is not a word.
 static void sizeTag(FILE* out, int sz) {
-    if (sz != 0 && sz != 4) fprintf(out, " :%d", sz);
+    if (sz == -4) fprintf(out, " :f4");            // a float in memory
+    else if (sz != 0 && sz != 4) fprintf(out, " :%d", sz);
 }
 
 static std::string ptrExpr(const std::string& p, int off) {

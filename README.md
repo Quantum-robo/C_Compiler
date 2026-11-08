@@ -64,8 +64,8 @@ make check-archived               # the older front-end suite in archived_tests/
 
 | Folder              | Tests | What is checked                                                                          |
 | ------------------- | ----- | ---------------------------------------------------------------------------------------- |
-| `tests/codegen/`    | 45    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
-| `tests/errors/`     | 18    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
+| `tests/codegen/`    | 47    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
+| `tests/errors/`     | 22    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
 | `tests/ir/`         | 5     | The three-address code, struct layouts and symbol tables equal `expected/<name>.tac`      |
 | `tests/parser/`     | 5     | Syntax: files with `_invalid` in the name are rejected, the others accepted               |
 | `tests/semantic/`   | 14    | Feature programs that must compile                                                       |
@@ -99,16 +99,17 @@ change that was reviewed. `scripts/long_functions.py` lists functions longer tha
 | public / private / protected              | `19_access_modifiers` (legal use), `tests/errors/` (illegal use)   |
 | enum, union                               | `20_enum_union`, `40_enum_union_static`                            |
 | Strings and the C library                 | `26_strings_ctype`, `27_malloc_free`, `41_macros_casts_names`      |
+| float and double, `%f` in printf / scanf, math functions | `46_float`, `47_float_edge`                  |
 
 ## The language
 
 C with classes, references and `new` / `delete`: all the usual operators and statements, `int` / `char` / `short` / `long` /
-`bool`, pointers (including pointers to pointers and to functions), arrays of any dimension, structs, unions, enums,
+`bool`, `float` / `double`, pointers (including pointers to pointers and to functions), arrays of any dimension, structs, unions, enums,
 classes with `public` / `private` / `protected`, methods, constructors (initializer lists, overloading by argument
 count) and destructors, references, casts, `static`, `goto`, `#define NAME value` macros, and a runtime library with
-`printf` / `scanf` / `sprintf`, `malloc` / `free`, and the string and ctype functions.
+`printf` / `scanf` / `sprintf` (including `%f %e %g`), `malloc` / `free`, and the string, ctype and math functions.
 
-**Not supported:** floating point (the compiler reports it), inheritance, virtual functions, templates, operator
+**Not supported:** `long double`, inheritance, virtual functions, templates, operator
 overloading, `typedef`, function-like macros, unsigned arithmetic, file I/O. The complete list, with the reasons and
 the workarounds, is in [docs/LANGUAGE_GUIDE.md](docs/LANGUAGE_GUIDE.md).
 
