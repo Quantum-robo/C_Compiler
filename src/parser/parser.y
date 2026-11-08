@@ -3326,6 +3326,50 @@ static int runPass(FILE* input) {
     return yyparse();
 }
 
+/* ---- scratch files ----
+   The program is read twice, so standard input and the embedded runtime source need a rewindable file. tmpfile()
+   depends on the TMP / TEMP environment (on Windows it fails when TMP is unusable), so fall back to a file in the
+   current directory that is removed when it is closed or when the compiler exits. */
+static std::map<FILE*, std::string> scratchNames;
+
+static void removeScratchFiles() {
+    for (std::map<FILE*, std::string>::iterator it = scratchNames.begin(); it != scratchNames.end(); ++it) {
+        fclose(it->first);
+        remove(it->second.c_str());
+    }
+    scratchNames.clear();
+}
+
+static FILE* scratchFile() {
+    FILE* f = tmpfile();
+    if (f) return f;
+    static int counter = 0;
+    std::string name = ".compiler_scratch_" + std::to_string(counter++) + ".tmp";
+    f = fopen(name.c_str(), "w+");
+    if (!f) return nullptr;
+    if (scratchNames.empty()) atexit(removeScratchFiles);
+    scratchNames[f] = name;
+    return f;
+}
+
+static void closeScratch(FILE* f) {
+    std::map<FILE*, std::string>::iterator it = scratchNames.find(f);
+    fclose(f);
+    if (it != scratchNames.end()) {
+        remove(it->second.c_str());
+        scratchNames.erase(it);
+    }
+}
+
+// A stream that discards everything written to it (the diagnostics of the first pass).
+static FILE* discardStream() {
+#ifdef _WIN32
+    return fopen("NUL", "w");
+#else
+    return fopen("/dev/null", "w");
+#endif
+}
+
 // Compile a whole program: pass 1 collects the layout of every struct / class / union (its diagnostics are
 // discarded), pass 2 is the real compilation with every layout known. Returns yyparse's result.
 static int compileFile(FILE* file) {
@@ -3336,7 +3380,7 @@ static int compileFile(FILE* file) {
     finalFuncSigs.clear();
     needCtor.clear();
     needDtor.clear();
-    FILE* scratch = tmpfile();
+    FILE* scratch = discardStream();
     if (scratch) diag_out = scratch;
     runPass(file);
     finalLayouts = layoutBuild;
@@ -3355,11 +3399,11 @@ static int compileFile(FILE* file) {
 
 // Compile the runtime library (C source embedded in the compiler) into 'rt' / 'rtLayouts'.
 static bool compileRuntime(TACGenerator& rt, LayoutTable& rtLayouts) {
-    FILE* f = tmpfile();
+    FILE* f = scratchFile();
     if (!f) return false;
     fputs(kRuntimeSource, f);
     int res = compileFile(f);
-    fclose(f);
+    closeScratch(f);
     if (res != 0 || has_error) return false;
     rt = tacGen;
     rtLayouts = finalLayouts;
@@ -3427,7 +3471,7 @@ static FILE* openSource(const Options& o) {
         if (!f) perror("Error opening file");
         return f;
     }
-    FILE* f = tmpfile();
+    FILE* f = scratchFile();
     if (!f) {
         perror("Error creating scratch file");
         return nullptr;

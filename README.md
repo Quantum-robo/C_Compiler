@@ -26,7 +26,9 @@ source.c -> Lexer -> Parser + semantic checks -> TAC (typed) -> MIPS code genera
 sudo apt install g++ flex bison make spim        # Debian / Ubuntu (also in WSL)
 ```
 
-On Windows use WSL, or Git Bash for the shell scripts; a freshly built `.exe` may be blocked for a moment by
+On Windows either use WSL (the same commands as Linux), or MSYS2 (UCRT64): `pacman -S mingw-w64-ucrt-x86_64-gcc make flex bison diffutils`, then run `make` and `./run.sh ./compiler` in the MSYS2 shell, which gives `compiler.exe`
+(the end-to-end tests need a `spim` executable on the PATH and are skipped without one). The scripts need a POSIX shell, so
+use Git Bash, MSYS2 or WSL, not PowerShell; a freshly built `.exe` may be blocked for a moment by
 application control (the Makefile retries once, see [docs/LANGUAGE_GUIDE.md](docs/LANGUAGE_GUIDE.md) for troubleshooting).
 
 ## Build, compile, run
