@@ -4,8 +4,8 @@ The parser reads the program twice and produces three-address code (TAC) plus ta
 type, variable and temporary. The MIPS code generator works from these and nothing else.
 
 ```bash
-./parser prog.c               # prints the TAC and writes prog.tac
-./parser --tables prog.c      # also prints / writes the layouts and symbol tables
+./compiler --check --tac prog.tac prog.c            # write the TAC (no assembly)
+./compiler --check --tables --print-tac prog.c      # print it with the layouts and symbol tables
 ```
 
 ## 1. Two passes

@@ -1,447 +1,152 @@
-# C-Like Compiler Front End
+# C-Like Compiler: C / C++ subset to MIPS32
 
-A compiler front end for a C-like language (C with classes, references and `new`/`delete`), implemented with **Flex**, **GNU Bison** and C++17.
+A compiler written in **C++** with **Flex** and **GNU Bison**. It translates a C-like language (C with classes,
+constructors / destructors, references and `new` / `delete`) into **MIPS32 assembly** that runs on the
+**SPIM simulator**. The intermediate representation is **three-address code**.
 
-The pipeline has five phases:
-
-1. **Lexical analysis** (Flex): recognizes tokens; the standalone `lexer` prints a token / token-type table.
-2. **Syntax analysis** (Bison): validates the grammar and reports errors with line numbers.
-3. **Semantic analysis**: declaration, type, control-flow, function and access-control checks, reported as errors or warnings.
-4. **Intermediate code generation**: typed three-address code (TAC) for every program that passes the earlier phases, together with the struct layouts and symbol tables a code generator needs (see [docs/IR.md](docs/IR.md)).
-
-The program is read twice (the first pass collects the class layouts), so a method can use members declared after it.
-5. **MIPS code generation**: `-S prog.s` turns the TAC into MIPS32 assembly for the **SPIM** simulator (`spim -file prog.s`). The output includes the part of the runtime library the program uses (`printf`, `scanf`, `malloc`, string and ctype functions), which is itself written in C and compiled by this compiler. See [docs/MIPS.md](docs/MIPS.md).
-
-## Project Structure
+| Item                     | Choice                                              |
+| ------------------------ | --------------------------------------------------- |
+| Implementation language  | C++17, Flex (lexer), Bison (parser)                 |
+| Source language          | C-like language (C plus classes and references)     |
+| Intermediate representation | Three-address code (TAC)                         |
+| Target                   | MIPS32 assembly                                     |
+| **Simulator required**   | **SPIM** (`spim -file prog.s`); QtSpim and MARS load the same file |
 
 ```text
-C_Compiler/
-├── src/
-│   ├── lexer/
-│   │   ├── Lexer.l
-│   │   ├── Token.cpp
-│   │   ├── Token.hpp
-│   │   ├── TokenType.hpp
-│   │   └── main.cpp            (standalone lexer driver)
-│   ├── parser/
-│   │   └── parser.y            (grammar + semantic checks + IR generation)
-│   ├── codegen/
-│   │   ├── MipsGen.hpp
-│   │   ├── MipsGen.cpp         (TAC -> MIPS32 for SPIM)
-│   │   └── Runtime.cpp         (runtime library: C source compiled with the program + 4 syscall stubs)
-│   ├── semantic/
-│   │   ├── Types.hpp           (type model used by the semantic checks)
-│   │   ├── Layout.hpp
-│   │   └── Layout.cpp          (sizes, alignment and field offsets of structs / classes / unions)
-│   └── ir/
-│       ├── TAC.hpp
-│       └── TAC.cpp             (three-address code, symbol tables and their printing)
-├── tests/
-│   ├── lexer/                  (inputs for make test-lexer)
-│   ├── parser/                 (syntax tests, make test-parser)
-│   ├── semantic/               (feature programs, make test-semantic / make ir)
-│   ├── errors/                 (programs that must be rejected, with the expected message)
-│   ├── ir/                     (IR and layout / symbol tables compared with expected/<name>.tac)
-│   └── codegen/                (end-to-end programs run on SPIM, output compared with <name>.expected)
-├── archived_tests/
-│   └── 25_OCT/                 (archived front-end suite: expected IR, semantic error/warning/valid tests)
-│       ├── expected/           (reviewed expected IR, one .tac per feature test)
-│       ├── semantic_errors/
-│       └── semantic_valid/
-├── test.c                      (sample input for make test)
-├── docs/
-│   ├── IR.md                   (the typed three-address code, layouts and tables the code generator uses)
-│   ├── MIPS.md                 (code generation scheme, frame layout, calling convention, runtime)
-│   └── LANGUAGE_GUIDE.md       (rules, limitations, enums, symbol table, commands, troubleshooting)
-├── Makefile
-├── run.sh
-└── README.md
+source.c -> Lexer -> Parser + semantic checks -> TAC (typed) -> MIPS code generator -> source.s
+                                                                  + runtime library (printf, scanf, malloc, ...)
 ```
 
 ## Requirements
 
-The following tools are required:
-
-* GNU C++ compiler
-* Flex
-* GNU Bison
-* Make
-
-`run.sh` needs a POSIX shell (bash). On Windows, use Git Bash or WSL; running `./run.sh` from PowerShell only opens the file, so use `bash ./run.sh ...` there.
-
-On Fedora, the tools can be installed with:
+* a C++ compiler (`g++`), `flex`, `bison` and `make` to build the compiler;
+* **`spim`** to run the generated programs and the end-to-end tests.
 
 ```bash
-sudo dnf install gcc-c++ flex bison make
+sudo apt install g++ flex bison make spim        # Debian / Ubuntu (also in WSL)
 ```
 
-On Debian/Ubuntu (including WSL): `sudo apt install g++ flex bison make`.
+On Windows use WSL, or Git Bash for the shell scripts; a freshly built `.exe` may be blocked for a moment by
+application control (the Makefile retries once, see [docs/LANGUAGE_GUIDE.md](docs/LANGUAGE_GUIDE.md) for troubleshooting).
 
-## Building
+## Build, compile, run
 
 ```bash
-make            # build lexer and parser (lexer.exe / parser.exe on Windows)
-make parser     # build only the compiler
-make lexer      # build only the standalone lexer
-make clean      # remove binaries, generated sources, ./*.TAC and tests/ir_output/
+make                              # builds ./compiler (and the standalone ./lexer)
+./compiler prog.c                 # writes prog.s (MIPS assembly)
+spim -file prog.s                 # run it on the simulator
 ```
 
-On Windows the executables are linked statically. Application-control or antivirus software may block the first launch of a freshly built `.exe` (symptoms: `Bad file number`, exit status 126, or `UNKNOWN phase` in a `.TAC` file). The Makefile retries once after linking; if a command still fails that way, run it again.
+Options of `./compiler`:
 
-## Running the Compiler
+| Option            | Meaning                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `-o <file>`       | write the assembly to `<file>` (default: `<source>.s`)               |
+| `--check`         | check only (syntax, types, IR); write no assembly                    |
+| `--tac <file>`    | also write the three-address code to `<file>`                        |
+| `--print-tac`     | print the three-address code                                         |
+| `--tables`        | add the struct layouts and symbol tables to the TAC output           |
 
-The main submission interface is:
+The exit status is 0 on success, 1 for a compile error, 2 for a bad command line. `main`'s return value becomes
+the exit status of the program under SPIM; `main(int argc, char **argv)` receives SPIM's arguments.
+
+The generated `.s` file is self-contained: it holds the program and the part of the runtime library it uses.
+
+## Tests
 
 ```bash
-./parser <source_file>
+make check                        # same as:  ./run.sh ./compiler
+./run.sh ./compiler               # runs every test in tests/ (the end-to-end tests are skipped without spim)
+make check-archived               # the older front-end suite in archived_tests/
 ```
 
-For example:
+`run.sh` takes the compiler executable as its argument and prints one PASS / FAIL line per test and a summary.
 
-```bash
-./parser tests/parser/test1_types_and_vars.c
-```
+| Folder              | Tests | What is checked                                                                          |
+| ------------------- | ----- | ---------------------------------------------------------------------------------------- |
+| `tests/codegen/`    | 45    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
+| `tests/errors/`     | 18    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
+| `tests/ir/`         | 5     | The three-address code, struct layouts and symbol tables equal `expected/<name>.tac`      |
+| `tests/parser/`     | 5     | Syntax: files with `_invalid` in the name are rejected, the others accepted               |
+| `tests/semantic/`   | 14    | Feature programs that must compile                                                       |
+| `tests/lexer/`      | 5     | Inputs for the standalone lexer (`make test-lexer`)                                      |
+| `archived_tests/`   | 125   | The earlier front-end suite (golden TAC, semantic error and warning programs)           |
 
-Add `--tables` (`./parser --tables prog.c`) to also print and save the struct layouts and the symbol tables.
+`./run.sh --update ./compiler` re-saves the expected TAC of `tests/ir` and the expected output of `tests/codegen` after a
+change that was reviewed. `scripts/long_functions.py` lists functions longer than 30 lines that have no comment.
 
-Add `-S prog.s` to also generate MIPS assembly, and run it with `spim -file prog.s`.
+### Features and the tests that cover them
 
-For a valid program, the parser reports success, prints the three-address-code IR, and writes it to `<source_file>.tac` (or to the path given as a second argument):
+| Feature                                   | Test programs in `tests/codegen/`                                  |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| All arithmetic and logical operators      | `01_arith_logical`, `30_operators_edge`                            |
+| if / else                                 | `02_if_else`                                                       |
+| for, while, do-while                      | `03_for`, `04_while`, `05_do_while`                                |
+| switch                                    | `06_switch`, `31_control_edge`                                     |
+| Arrays of int and char                    | `07_arrays`, `32_array_edge`                                       |
+| Pointers (also multi-level, function pointers) | `08_pointers`, `35_pointer_edge`                              |
+| Structures                                | `09_structs`, `33_struct_edge`                                     |
+| printf and scanf                          | `10_printf_scanf`, `25_printf_formats`, `28_scanf_formats`, `42_sprintf` |
+| Function calls with arguments             | `11_func_args`                                                     |
+| Recursion                                 | `12_recursion`, `36_recursion_edge`                                |
+| Classes and objects                       | `13_class_object`, `34_class_edge`, `19_access_modifiers`, `22_bank_class` |
+| Constructors and destructors              | `43_ctor_dtor`, `44_ctor_members`, `45_raii`                       |
+| Dynamic memory (new, delete, malloc, free)| `14_dynamic_memory`, `27_malloc_free`, `37_dynamic_edge`, `21_linked_list` |
+| References                                | `15_references`, `38_reference_edge`                               |
+| Multi-dimensional arrays                  | `16_multidim_arrays`, `39_multidim_edge`                           |
+| goto, break, continue                     | `17_goto_break_continue`                                           |
+| static                                    | `18_static`                                                        |
+| public / private / protected              | `19_access_modifiers` (legal use), `tests/errors/` (illegal use)   |
+| enum, union                               | `20_enum_union`, `40_enum_union_static`                            |
+| Strings and the C library                 | `26_strings_ctype`, `27_malloc_free`, `41_macros_casts_names`      |
+
+## The language
+
+C with classes, references and `new` / `delete`: all the usual operators and statements, `int` / `char` / `short` / `long` /
+`bool`, pointers (including pointers to pointers and to functions), arrays of any dimension, structs, unions, enums,
+classes with `public` / `private` / `protected`, methods, constructors (initializer lists, overloading by argument
+count) and destructors, references, casts, `static`, `goto`, `#define NAME value` macros, and a runtime library with
+`printf` / `scanf` / `sprintf`, `malloc` / `free`, and the string and ctype functions.
+
+**Not supported:** floating point (the compiler reports it), inheritance, virtual functions, templates, operator
+overloading, `typedef`, function-like macros, unsigned arithmetic, file I/O. The complete list, with the reasons and
+the workarounds, is in [docs/LANGUAGE_GUIDE.md](docs/LANGUAGE_GUIDE.md).
+
+## Project structure
 
 ```text
-=> PARSE SUCCESSFUL: No syntax errors found.
-=> SEMANTIC CHECK PASSED: 0 warning(s).
-...IR...
-=> IR saved to: tests/parser/test1_types_and_vars.tac
+C_Compiler/
+├── src/
+│   ├── lexer/        Lexer.l, Token.*, main.cpp          (tokens; macros; type-name hook; standalone lexer)
+│   ├── parser/       parser.y                            (grammar, semantic checks, IR generation, driver)
+│   ├── semantic/     Types.hpp, Layout.*                 (type model; sizes and field offsets)
+│   ├── ir/           TAC.hpp, TAC.cpp                    (three-address code, symbol tables)
+│   └── codegen/      MipsGen.*, Runtime.cpp              (TAC -> MIPS32; runtime library)
+├── tests/            codegen/ errors/ ir/ parser/ semantic/ lexer/
+├── archived_tests/   25_OCT/                              (earlier front-end suite)
+├── docs/             LANGUAGE_GUIDE.md  IR.md  MIPS.md
+├── scripts/          long_functions.py
+├── Makefile          builds ./compiler and ./lexer; make check
+├── run.sh            runs the tests with the executable given as its argument
+└── README.md
 ```
 
-The token / token-type table is printed by the standalone lexer (`./lexer`, see below).
-
-For invalid input, lexical, syntax or semantic errors are reported instead and no IR is written.
-
-`run.sh` is a convenient wrapper that prints the IR of one file, or of every `.c` file in a folder, and saves each as `./<name>.TAC`:
-
-```bash
-./run.sh archived_tests/25_OCT/test14_recursion.c
-./run.sh tests/semantic/
-```
-
-Example:
-
-```text
-SYNTAX ERROR: syntax error at line 3 (near ';')
-```
-
-The parser returns a non-zero exit status when an error is detected.
-
-## Running the Standalone Lexer
-
-The lexer can also be executed independently:
-
-```bash
-./lexer <source_file>
-```
-
-For example:
-
-```bash
-./lexer tests/parser/test1_types_and_vars.c
-```
-
-The standalone lexer prints each recognized token and its corresponding token type.
-
-Lexical errors are reported to `stderr`, and the lexer returns a non-zero exit status if a lexical error is encountered.
-
-## Test Suite
-
-Test cases live under `tests/` and are run by one script, `run.sh`, with `--test <executable>`. The older front-end suite (golden IR, semantic error/valid programs) is kept in `archived_tests/25_OCT/` and runs separately with `--archived <executable>`:
-
-```bash
-make                # builds the lexer and parser
-./run.sh --test ./parser   # (./parser.exe on Windows) runs every test case; exits 0 only if all of them pass
-```
-
-`make check` builds and runs the suite in `tests/`; `make check-archived` runs the archived suite. The generated IR is written to `tests/ir_output/` (ignored by git).
-
-### Make targets
-
-| Command              | What it does                                                                                       |
-| -------------------- | -------------------------------------------------------------------------------------------------- |
-| `make`               | Build the lexer and the parser.                                                                    |
-| `make test`          | Generate the IR for `test.c` only, into `./test.TAC`.                                              |
-| `make test-lexer`    | Run the lexer over `tests/lexer/*.c`, printing lexical errors (a file with errors is reported, not a make failure). |
-| `make test-parser`   | Syntax-check `tests/parser/*.c` (`_invalid` files must be rejected), printing errors.              |
-| `make test-semantic` | Semantic-check `tests/semantic/*.c`, printing errors.                                              |
-| `make ir`            | IR for every `tests/semantic/*.c`, written to `./<name>.TAC`. A failing file's `.TAC` holds the diagnostics, headed by the failing phase. |
-| `make check`         | Regression suite in `tests/` (`run.sh --test`).                                                    |
-| `make check-archived`| Archived front-end suite in `archived_tests/25_OCT/` (`run.sh --archived`).                        |
-| `make clean`         | Remove binaries, generated sources, `./*.TAC` and `tests/ir_output/`.                              |
-
-| Folder                              | Tests | What `run.sh` checks                                                                                  |
-| ----------------------------------- | ----- | ----------------------------------------------------------------------------------------------------- |
-| `tests/parser/`                     | 5     | Syntax. Files whose name contains `_invalid` must be rejected, all others accepted.                   |
-| `archived_tests/25_OCT/*.c`         | 32    | One program per language feature. The generated IR must equal `archived_tests/25_OCT/expected/<name>.tac`.     |
-| `archived_tests/25_OCT/semantic_errors/` | 71    | `err_*.c` must be rejected, `warn_*.c` accepted; stderr must contain the `// EXPECT:` text (line 1).  |
-| `archived_tests/25_OCT/semantic_valid/` | 22    | Tricky and realistic valid programs: accepted, with no diagnostics at all.                            |
-| `tests/semantic/`                   | 14    | Must compile (also used by `make test-semantic` and `make ir`).                                       |
-| `tests/ir/`                         | 5     | The IR and the layout / symbol tables (`--tables`) must equal `tests/ir/expected/<name>.tac`.         |
-| `tests/errors/`                     | 18    | Must be rejected (access control, undeclared names, ...); diagnostics must contain the `// EXPECT:` text. |
-| `tests/codegen/`                    | 45    | Compiled to MIPS, run on SPIM; the output must equal `<name>.expected` (skipped if `spim` is missing). |
-
-`tests/lexer/` holds inputs for the standalone lexer (`make test-lexer`).
-
-If the IR changes on purpose, review it and re-bless the expected files with `./run.sh --update ./parser`.
-
-If the executable cannot be launched at all (for example because Windows is blocking a freshly built `.exe`), `run.sh` stops with a clear message and exit status 2 instead of failing every test.
-
-A successful run of `make check` (87 tests at the time of writing; `make check-archived` runs the 125 archived tests) ends with:
-
-```text
-==============================
-Test Summary
-==============================
-Total:  87
-Passed: 87
-Failed: 0
-
-All tests passed!
-```
-
-### Features covered
-
-| Feature                                  | Test program (`archived_tests/25_OCT/`)                                          |
-| ---------------------------------------- | ----------------------------------------------------------------------- |
-| All arithmetic and logical operators     | `test01_arith_logical_ops.c`                                            |
-| if-else                                  | `test02_if_else.c`                                                      |
-| for / while / do-while loop              | `test03_for_loop.c`, `test04_while_loop.c`, `test05_do_while.c`         |
-| switch cases                             | `test06_switch_case.c`, `test21_switch_nested_no_default.c`             |
-| arrays (integer and char)                | `test07_arrays_int_char.c`, `test24_array_init_forms.c`                 |
-| pointers                                 | `test08_pointers.c`, `test22_pointer_compound_ops.c`                    |
-| structure                                | `test09_structures.c`, `test23_struct_array_members.c`                  |
-| printf and scanf                         | `test10_printf_scanf.c`                                                 |
-| function call with arguments             | `test11_function_calls_args.c`                                          |
-| goto, break and continue                 | `test12_goto_break_continue.c`                                          |
-| static keyword                           | `test13_static_keyword.c`, `test26_static_two_functions.c`              |
-| recursive function call                  | `test14_recursion.c`                                                    |
-| class and object                         | `test15_class_object.c`, `test25_two_classes_same_method.c`             |
-| dynamic memory allocation                | `test16_dynamic_memory.c`                                               |
-| public, private and protected            | `test17_access_modifiers.c`, `semantic_errors/err_private_*.c`          |
-| enum (with numeric values), union          | `test18_enum_union.c`, `test32_enum_values.c`                           |
-| multi-dimensional arrays                 | `test19_multidim_arrays.c`                                              |
-| short-circuit `&&` `\|\|`, `?:`            | `test27_short_circuit_ternary.c`                                        |
-| references                               | `test28_reference_variables.c` ... `test31_reference_return_sizeof.c`   |
-| everything together                      | `test20_integration_bubble_sort.c`                                      |
-
-## Language Features
-
-The parser implements a **C-like language subset** supporting:
-
-### Data Types
-
-```text
-int  short  long  signed  unsigned
-float  double
-char  bool  void
-```
-
-plus pointers, references (`int &r = x;`), arrays (including multi-dimensional), `struct`, `union`, `enum` and `class` types, and the `const`, `static`, `extern` and `typedef` specifiers.
-
-### Declarations
-
-```c
-int x;
-
-int x = 10;
-
-float value = 3.14;
-
-char c = 'a';
-
-bool flag = true;
-```
-
-### Functions
-
-```c
-int add(int a, int b) {
-    return a + b;
-}
-```
-
-### Control Flow
-
-* `if` / `else`
-* `while`, `do-while`, `for`
-* `switch` / `case` / `default`
-* `break`, `continue`, `return`
-* `goto` and labels
-
-### Expressions
-
-The grammar supports:
-
-* Arithmetic operators
-* Assignment and compound assignment
-* Relational operators
-* Equality operators
-* Logical operators
-* Bitwise operators
-* Shift operators
-* Increment/decrement
-* Unary operators
-* Conditional (`?:`) expressions
-* Parenthesized expressions
-* Function calls (including recursion)
-* Array indexing
-* `.` and `->` member access, `this->member`
-* Pointer dereference and address-of
-* `sizeof`
-* `new` / `delete`
-
-Operator precedence and associativity are explicitly defined in the Bison grammar.
-
-### Arrays
-
-```c
-int values[10];
-
-values[0] = 5;
-
-values[1]++;
-```
-
-### Enums
-
-Each enumerator gets its numeric value at compile time (`NAME` = previous value + 1, starting at 0, or `NAME = constant`), and the IR uses the number: `enum Status { IDLE, RUNNING = 5, STOPPED };` makes `s = RUNNING` become `s = 5` and `STOPPED` become `6`. Decimal, hex, negative and character-literal initialisers are understood. An initialiser that is not a plain literal (for example `1 << 3`) gives a warning, and that enumerator and the ones after it keep their names in the IR. Enumerators cannot be assigned to, and two `case` labels with the same value are rejected.
-
-### Structures and Classes
-
-```c
-struct Point {
-    int x;
-    int y;
-};
-```
-
-```c
-class MyClass {
-
-private:
-    int value;
-
-public:
-    void setValue(int v) {
-        this->value = v;
-    }
-
-};
-```
-
-Member functions are supported, and all members of a `class` default to `private`. Supported access specifiers:
-
-```text
-public
-private
-protected
-```
-
-### Lexical Features
-
-The lexer recognizes:
-
-* Identifiers
-* Decimal integer literals
-* Hexadecimal integer literals
-* Floating-point literals
-* Character literals
-* String literals
-* C-like comments
-* C and C++-style operators and punctuators
-* C/C++-style keywords supported by the lexer
-
-Lexical errors include:
-
-* Unrecognized characters
-* Invalid character literals
-* Unterminated character literals
-* Unterminated string literals
-* Unterminated block comments
-
-## Writing Programs for This Compiler
-
-The compiler accepts a C-like subset. For example, a class or struct name must be written with its keyword (`class Box b1;`, not `Box b1;`), and `typedef` names, anonymous enums, casts and inheritance are not supported. The full list of rules and limitations, how enums and the symbol table work, all commands, and a troubleshooting table are in [docs/LANGUAGE_GUIDE.md](docs/LANGUAGE_GUIDE.md).
-
-## Error Handling
-
-The analyzer reports errors without silently accepting invalid input.
-
-### Syntax Error
-
-```text
-SYNTAX ERROR: syntax error at line 3 (near ';')
-```
-
-### Lexical Error
-
-```text
-LEXICAL ERROR: invalid character literal 'ab' at line 5
-```
-
-### Semantic Error
-
-Programs that are syntactically valid but wrong in meaning are rejected, and no IR is written:
-
-```text
-SEMANTIC ERROR: 'x' was not declared in this scope at line 2
-SEMANTIC ERROR: too few arguments to function 'add' (expected 2, got 1) at line 3
-SEMANTIC ERROR: 'secret' is private within this context at line 9
-
-=> SEMANTIC ANALYSIS FAILED: 3 error(s), 0 warning(s). No IR generated.
-```
-
-Checks performed:
-
-* **Declarations:** undeclared identifiers, redeclaration, redefinition and conflicting declaration of functions/classes, duplicate members, `void` variables, incomplete struct types, negative array sizes, excess initializers
-* **Control flow:** `break`/`continue` outside a loop or switch, undefined or duplicate `goto` labels, `case`/`default` outside a switch, duplicate `case` values, non-integer switch
-* **Functions:** wrong argument count, argument/return type mismatch, `return` with a value in a `void` function, calling a non-function, binding a non-const reference to an rvalue
-* **Types:** incompatible assignment/initialization (struct vs scalar, pointer vs integer, incompatible pointers), invalid operands (`pointer + pointer`, `float % int`), invalid `*`/`&`/`[]`/`->`/`.` use, assignment to a non-lvalue, a `const` object or an array
-* **Classes:** access control (`private`/`protected` members used outside the class), unknown members, `this` outside a member function
-
-Debatable cases are reported as warnings instead and do not stop compilation: implicit declaration of a function, incompatible pointer types, discarded `const`, division by a literal zero, a `return;` in a non-void function.
-
-The checker is conservative: library calls (`printf`, `malloc`, ...), function pointers and anything else whose type it cannot determine are never reported, so valid programs are not rejected.
-
-Lexical, syntax and semantic errors all cause the parser to return a non-zero exit status.
-
-This allows the automated test script to distinguish successfully parsed programs from programs containing errors.
-
-To run the tests: `make check` (`tests/`) and `make check-archived` (`archived_tests/`), or `./run.sh --test ./parser` / `./run.sh --archived ./parser`
-
-## Scope
-
-This project implements a **C-like language subset**, rather than the complete ISO C language.
-
-The following are outside the current scope:
-
-* Preprocessor directives and macros (`#include` lines are skipped; common library functions and constants such as `printf`, `malloc` and `NULL` are known to the semantic checker)
-* Casts, templates, inheritance and operator overloading
-* Machine-code generation and optimization (the compiler stops at three-address-code IR)
-* Unicode identifiers
-* Wide character/string literals
-* Complete ISO C syntax
-
-The lexer may recognize additional C/C++ keywords that are not necessarily used by the current parser grammar.
-
-## Implementation
-
-The project uses:
-
-* **Flex** for lexical analysis
-* **GNU Bison/YACC** for syntax analysis
-* **C++17** for compilation and supporting code
-
-Bison generates the parser source and header files, while Flex generates the lexer source.
-
-The parser and standalone lexer share the generated lexer implementation. The standalone lexer uses `src/lexer/main.cpp`, while the parser links the generated Bison parser (which holds the semantic checks and drives the TAC generator in `src/ir/`) with the same lexer.
-
-Generated files and compiled binaries are excluded from version control through `.gitignore`.
+How the compiler works: the program is read twice (the first pass only collects the layout of every class, so a method
+can use members declared after it), semantic checks and IR generation happen in the Bison actions, and the typed
+three-address code is then translated to MIPS. See [docs/IR.md](docs/IR.md) for the IR and [docs/MIPS.md](docs/MIPS.md) for
+the code generator, the calling convention and the runtime library (which is itself written in this language and
+compiled with the program).
+
+## Makefile targets
+
+| Command              | What it does                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `make`               | Build `./compiler` and `./lexer`.                                                    |
+| `make check`         | Run the test suite (`./run.sh ./compiler`).                                          |
+| `make check-archived`| Run the archived front-end suite.                                                    |
+| `make test`          | Compile `test.c` to `test.s` and run it on SPIM.                                     |
+| `make test-lexer`    | Run the standalone lexer over `tests/lexer/*.c`.                                     |
+| `make test-parser`   | Syntax-check `tests/parser/*.c`.                                                     |
+| `make test-semantic` | Check `tests/semantic/*.c`.                                                          |
+| `make ir`            | Write `./<name>.TAC` (three-address code) for every `tests/semantic/*.c`.            |
+| `make clean`         | Remove the binaries, the generated sources and the generated files.                  |

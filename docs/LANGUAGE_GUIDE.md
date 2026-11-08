@@ -95,31 +95,31 @@ The symbol table is built while the parser reads the program (in `src/parser/par
 
 ## 4. Commands
 
-| Command                | What it does                                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------------------------------- |
-| `make`                 | Build the lexer and the parser (`lexer.exe` / `parser.exe` on Windows).                                   |
-| `make test`            | IR for `test.c` only, written to `./test.TAC`.                                                            |
-| `make test-lexer`      | Run the lexer over `tests/lexer/*.c` and print the lexical errors.                                        |
-| `make test-parser`     | Syntax-check `tests/parser/*.c` (files with `_invalid` in the name must be rejected).                     |
-| `make test-semantic`   | Semantic-check `tests/semantic/*.c` and print the errors.                                                 |
-| `make ir`              | IR for every `tests/semantic/*.c`, written to `./<name>.TAC`. A failing file's `.TAC` holds the diagnostics, headed by the failing phase. |
-| `make check`           | The regression suite in `tests/` (`./run.sh --test`).                                                     |
-| `make check-archived`  | The archived front-end suite in `archived_tests/25_OCT/` (`./run.sh --archived`).                         |
-| `make clean`           | Remove binaries, generated sources, `./*.TAC` and `tests/ir_output/`.                                     |
-| `./parser file.c [out]`| Compile one file; the IR is printed and saved to `file.tac`, or to `out`.                                 |
-| `./lexer file.c`       | Print the token table of one file.                                                                        |
-| `./run.sh file.c`      | Print the IR of one file (or every `.c` in a folder) and save it as `./<name>.TAC`.                       |
-| `./run.sh --test ./parser`   | Run the whole test suite; exits 0 only if every test passes.                                        |
-| `./run.sh --update --archived ./parser` | Re-save the expected IR in `archived_tests/25_OCT/expected/` (only after reviewing the new IR). |
+| Command                       | What it does                                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------------------------------ |
+| `make`                        | Build `./compiler` and `./lexer` (`.exe` on Windows).                                            |
+| `make check`                  | The test suite in `tests/` (`./run.sh ./compiler`).                                              |
+| `make check-archived`         | The archived front-end suite in `archived_tests/25_OCT/` (`./run.sh --archived ./compiler`).     |
+| `make test`                   | Compile `test.c` to `test.s` and run it on SPIM.                                                 |
+| `make test-lexer`             | Run the standalone lexer over `tests/lexer/*.c` and print the lexical errors.                    |
+| `make test-parser`            | Syntax-check `tests/parser/*.c` (files with `_invalid` in the name must be rejected).            |
+| `make test-semantic`          | Semantic-check `tests/semantic/*.c` and print the errors.                                        |
+| `make ir`                     | Three-address code for every `tests/semantic/*.c`, written to `./<name>.TAC`.                    |
+| `make clean`                  | Remove binaries, generated sources, `./*.TAC` and `tests/ir_output/`.                            |
+| `./compiler prog.c`           | Compile to `prog.s`; run it with `spim -file prog.s`. `-o file` names the output.                |
+| `./compiler --check prog.c`   | Only check the program (syntax, types, IR). `--tac file`, `--print-tac`, `--tables` show the IR. |
+| `./lexer prog.c`              | Print the token table of one file.                                                               |
+| `./run.sh ./compiler`         | Run the whole test suite; exits 0 only if every test passes.                                     |
+| `./run.sh file.c`             | Print the IR of one file (or every `.c` in a folder) and save it as `./<name>.TAC`.              |
+| `./run.sh --update ./compiler`| Re-save the expected IR (`tests/ir`) and expected output (`tests/codegen`) after a reviewed change. |
+| `./run.sh --update --archived ./compiler` | Re-save the expected IR in `archived_tests/25_OCT/expected/`.                        |
 
 ## 5. Troubleshooting
 
 | Symptom                                                              | Cause and fix                                                                                          |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `SYNTAX ERROR ... near 'b1'` followed by `'b1' was not declared`     | A bare class/struct name was used as a type. Write `class Box b1;` (see section 1).                    |
-| `Bad file number`, `Permission denied` or exit status 126 when running `parser.exe` / `lexer.exe` | Windows security (Smart App Control / application control) blocks unsigned, freshly built executables. Run the command again; if it keeps happening, turn off Smart App Control or use WSL. |
+| `Bad file number`, `Permission denied` or exit status 126 when running `compiler.exe` / `lexer.exe` | Windows security (Smart App Control / application control) blocks unsigned, freshly built executables. Run the command again; if it keeps happening, turn off Smart App Control or use WSL. |
 | `UNKNOWN phase` inside a `.TAC` file                                 | The same blocking: the compiler never ran, so no phase could be named.                                 |
 | `run.sh` prints "cannot be launched" and exits with status 2         | The executable is blocked (see above) or was not built; run `make` first.                              |
 | Running `./run.sh` from PowerShell only opens the file               | Use Git Bash or WSL, or `bash ./run.sh ...`.                                                           |
-| `make: Circular parser <- parser dependency dropped`                 | Fixed in the current Makefile. If you still see it, you have an old copy of the Makefile.              |
-| `IR differs from expected` in the test run                           | The IR changed. If that was intended, review the diff and re-save with `./run.sh --update ./parser`.   |
+| `IR differs from expected` in the test run                           | The IR changed. If that was intended, review the diff and re-save with `./run.sh --update ./compiler`.   |

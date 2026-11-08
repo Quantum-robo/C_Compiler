@@ -671,6 +671,8 @@ static bool foldConst(const std::string& op, const std::string& l, const std::st
     return true;
 }
 
+// A binary operator: evaluate both operands, check their types, fold constants, and scale pointer arithmetic
+// (p + n moves n elements, p - q counts elements). The result is a temporary holding the value.
 static Operand* binop(const char* op, Operand* a, Operand* b) {
     std::string l = rval(a);
     std::string r = rval(b);
@@ -785,6 +787,9 @@ static std::string dimString(Operand* o) {
     return rval(o);
 }
 
+// A name used in an expression: a variable (with its type and array dimensions), a constant (an enumerator
+// or const int, folded), a member of the current class (this->name), a function, or an undeclared name (reported
+// when it is actually used, since inside a method it may be a member declared further down the class).
 static Operand* identOp(const std::string& n) {
     std::string place = resolveName(n);
     Operand* o = valueOp(place);
@@ -1526,6 +1531,9 @@ static void emitAggrInit(const std::string& addr, long base, const AggrLayout* a
     }
 }
 
+// Code for the initializer of a variable: a single value, a string for a char array, a brace list for a
+// struct, a union, an array or an array of structs. Local aggregates are zeroed first, because the elements a
+// brace list leaves out must be zero.
 static void emitInitial(const std::string& target, const Symbol& sym, InitNode* init) {
     if (!init->isList) {
         finalizeLeaf(init);
@@ -1633,6 +1641,10 @@ static std::string uniqueLocal(const std::string& n) {
     return clash ? n + "." + std::to_string(count) : n;
 }
 
+// Process one declarator of a declaration: record a function prototype or a class member, or declare a variable
+// (type, array sizes taken from the initializer, unique IR name, entry in the symbol table and the code
+// generator's tables), construct it if its class has constructors, register its destructor, and emit and
+// type-check the initializer.
 static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
     if (sp->isTypedef) return;
     bool member = !cur_aggr.empty() && in_member_ctx;
@@ -1770,6 +1782,9 @@ static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
     }
 }
 
+// Start a function or method: open its scope, declare the parameters (a method also gets 'this'), build the
+// FuncInfo for the code generator, record the signature and emit func_begin. Parameters that are objects with a
+// destructor are registered for destruction when the function ends.
 static void beginFunction(Declarator* d) {
     DeclSpec* sp = currentSpec();
     bool isMethod = !cur_aggr.empty() && in_member_ctx;
@@ -3254,93 +3269,134 @@ static bool compileRuntime(TACGenerator& rt, LayoutTable& rtLayouts) {
     return true;
 }
 
-int main(int argc, char** argv) {
-    std::string input_path = "";
-    std::string output_path = "";
-    std::string asm_path = "";
-    bool withTables = false;
+/* ------------------------------------------------------------------
+   Command line
+   ------------------------------------------------------------------ */
 
+struct Options {
+    std::string source;        // input file ("" = standard input)
+    std::string asmPath;       // -o: where the MIPS assembly goes (default: <source>.s)
+    std::string tacPath;       // --tac: where the three-address code goes ("" = not written)
+    bool check = false;        // --check: front end only, no assembly
+    bool printTac = false;     // --print-tac
+    bool tables = false;       // --tables: layouts and symbol tables in the TAC output
+    bool help = false;
+    bool bad = false;
+};
+
+static void printUsage(FILE* out) {
+    fprintf(out,
+        "Usage: compiler [options] <source.c>\n"
+        "  Translates a C-like program (C with classes, references, new / delete) into MIPS32 assembly\n"
+        "  for the SPIM simulator; run the result with:  spim -file <source.s>\n"
+        "\n"
+        "  -o <file>       write the assembly to <file>   (default: <source>.s)\n"
+        "  --check         only check the program (syntax, types, IR); write no assembly\n"
+        "  --tac <file>    also write the three-address code to <file>\n"
+        "  --print-tac     print the three-address code\n"
+        "  --tables        add the struct layouts and symbol tables to the three-address code\n"
+        "  -h, --help      this text\n"
+        "Without <source.c> the program is read from standard input.\n");
+}
+
+static Options parseArguments(int argc, char** argv) {
+    Options o;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--tables") withTables = true;            // also write the layouts and symbol tables
-        else if (a == "-S" && i + 1 < argc) asm_path = argv[++i];   // write MIPS assembly to this file
-        else if (input_path.empty()) input_path = a;
-        else if (output_path.empty()) output_path = a;
+        bool hasValue = i + 1 < argc;
+        if (a == "-o" || a == "-S") { if (hasValue) o.asmPath = argv[++i]; else o.bad = true; }
+        else if (a == "--tac") { if (hasValue) o.tacPath = argv[++i]; else o.bad = true; }
+        else if (a == "--check") o.check = true;
+        else if (a == "--print-tac") o.printTac = true;
+        else if (a == "--tables") o.tables = true;
+        else if (a == "-h" || a == "--help") o.help = true;
+        else if (a.size() > 1 && a[0] == '-') o.bad = true;
+        else if (o.source.empty()) o.source = a;
+        else o.bad = true;
     }
+    if (o.asmPath.empty() && !o.source.empty()) {
+        size_t dot = o.source.find_last_of('.');
+        size_t slash = o.source.find_last_of("/\\");
+        bool hasExt = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+        o.asmPath = (hasExt ? o.source.substr(0, dot) : o.source) + ".s";
+    }
+    return o;
+}
 
-    FILE* file = nullptr;
-    if (!input_path.empty()) {
-        file = fopen(input_path.c_str(), "r");
-        if (!file) {
-            perror("Error opening file");
-            return 1;
-        }
-    } else {
-        // the program is read twice and standard input cannot be rewound: copy it to a scratch file
-        file = tmpfile();
-        if (!file) {
-            perror("Error creating scratch file");
-            return 1;
-        }
-        int c;
-        while ((c = getchar()) != EOF) fputc(c, file);
+// The program is read twice and standard input cannot be rewound: copy it to a scratch file first.
+static FILE* openSource(const Options& o) {
+    if (!o.source.empty()) {
+        FILE* f = fopen(o.source.c_str(), "r");
+        if (!f) perror("Error opening file");
+        return f;
     }
+    FILE* f = tmpfile();
+    if (!f) {
+        perror("Error creating scratch file");
+        return nullptr;
+    }
+    int c;
+    while ((c = getchar()) != EOF) fputc(c, f);
+    return f;
+}
 
-    if (output_path.empty() && !input_path.empty()) {
-        // Default naming convention: replace .c extension with .tac
-        size_t dot_pos = input_path.find_last_of('.');
-        if (dot_pos != std::string::npos) {
-            output_path = input_path.substr(0, dot_pos) + ".tac";
-        } else {
-            output_path = input_path + ".tac";
-        }
+// Compile the runtime library with the same machinery and write program + runtime to 'path'.
+static bool writeAssembly(const std::string& path) {
+    std::vector<std::string> errors;
+    bool ok = false;
+    FILE* out = fopen(path.c_str(), "w");
+    if (!out) {
+        perror(("Error opening output file: " + path).c_str());
+        return false;
     }
+    // the program's IR is kept aside while the runtime library goes through the compiler
+    TACGenerator progTac = tacGen;
+    LayoutTable progLayouts = finalLayouts;
+    TACGenerator rtTac;
+    LayoutTable rtLayouts;
+    if (!compileRuntime(rtTac, rtLayouts))
+        errors.push_back("internal error: the runtime library failed to compile");
+    else
+        ok = generateMips(progTac, progLayouts, rtTac, rtLayouts, out, errors);
+    fclose(out);
+    if (!ok) {
+        for (size_t i = 0; i < errors.size(); ++i) fprintf(stderr, "CODE GENERATION ERROR: %s\n", errors[i].c_str());
+        remove(path.c_str());
+    }
+    return ok;
+}
+
+// The driver: read the options, compile the program (front end, IR), optionally write the three-address code,
+// then the MIPS assembly. Exit status 0 on success, 1 for a compile error, 2 for a bad command line.
+int main(int argc, char** argv) {
+    Options opt = parseArguments(argc, argv);
+    if (opt.help || opt.bad) {
+        printUsage(opt.help ? stdout : stderr);
+        return opt.help ? 0 : 2;
+    }
+    FILE* file = openSource(opt);
+    if (!file) return 1;
 
     type_name_hook = isTypeNameHook;
     int res = compileFile(file);
-
-    if (res == 0 && !has_error) {
-        printf("\n=> PARSE SUCCESSFUL: No syntax errors found.\n");
-        printf("=> SEMANTIC CHECK PASSED: %d warning(s).\n", sem_warnings);
-        tacGen.printTAC(stdout);
-        if (withTables) tacGen.printTables(stdout, finalLayouts);
-
-        if (!output_path.empty()) {
-            if (tacGen.saveTAC(output_path, withTables, finalLayouts)) {
-                printf("\n=> IR saved to: %s\n", output_path.c_str());
-            }
-        }
-        if (!asm_path.empty()) {
-            FILE* asmFile = fopen(asm_path.c_str(), "w");
-            if (!asmFile) {
-                perror(("Error opening output file: " + asm_path).c_str());
-                return 1;
-            }
-            std::vector<std::string> cgErrors;
-            bool ok = false;
-            // the program's IR is kept aside while the runtime library is compiled with the same machinery
-            TACGenerator progTac = tacGen;
-            LayoutTable progLayouts = finalLayouts;
-            TACGenerator rtTac;
-            LayoutTable rtLayouts;
-            if (!compileRuntime(rtTac, rtLayouts))
-                cgErrors.push_back("internal error: the runtime library failed to compile");
-            else
-                ok = generateMips(progTac, progLayouts, rtTac, rtLayouts, asmFile, cgErrors);
-            fclose(asmFile);
-            if (!ok) {
-                for (size_t i = 0; i < cgErrors.size(); ++i)
-                    fprintf(stderr, "CODE GENERATION ERROR: %s\n", cgErrors[i].c_str());
-                remove(asm_path.c_str());
-                return 1;
-            }
-            printf("=> MIPS assembly saved to: %s\n", asm_path.c_str());
-        }
-        return 0;
+    if (res != 0 || has_error) {
+        if (sem_errors > 0)
+            fprintf(stderr, "\n=> SEMANTIC ANALYSIS FAILED: %d error(s), %d warning(s). No code generated.\n",
+                    sem_errors, sem_warnings);
+        return 1;
     }
 
-    if (sem_errors > 0)
-        fprintf(stderr, "\n=> SEMANTIC ANALYSIS FAILED: %d error(s), %d warning(s). No IR generated.\n",
-                sem_errors, sem_warnings);
-    return 1;
+    if (opt.printTac) {
+        tacGen.printTAC(stdout);
+        if (opt.tables) tacGen.printTables(stdout, finalLayouts);
+    }
+    if (!opt.tacPath.empty() && !tacGen.saveTAC(opt.tacPath, opt.tables, finalLayouts)) return 1;
+    if (opt.check) {
+        printf("Checked %s: no errors, %d warning(s)\n", opt.source.empty() ? "<stdin>" : opt.source.c_str(), sem_warnings);
+        return 0;
+    }
+    if (!writeAssembly(opt.asmPath)) return 1;
+    printf("Compiled %s -> %s (%d warning(s))\n", opt.source.empty() ? "<stdin>" : opt.source.c_str(),
+           opt.asmPath.c_str(), sem_warnings);
+    return 0;
 }

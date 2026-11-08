@@ -1,3 +1,7 @@
+# Builds the compiler:   make            (needs g++, flex and bison)
+# Compiles a program:    ./compiler prog.c        -> prog.s, run it with:  spim -file prog.s
+# Runs the test suite:   make check               (or  ./run.sh ./compiler)
+
 CXX      = g++
 FLEX     = flex
 BISON    = bison
@@ -7,8 +11,8 @@ ifeq ($(OS),Windows_NT)
 EXE = .exe
 LDFLAGS = -static
 endif
-LEXER_BIN  = ./lexer$(EXE)
-PARSER_BIN = ./parser$(EXE)
+LEXER_BIN    = ./lexer$(EXE)
+COMPILER_BIN = ./compiler$(EXE)
 
 # Windows application-control / antivirus may block the first launch of a freshly linked
 # executable for a few seconds; launch it once here (retrying) so later targets can run it.
@@ -24,19 +28,23 @@ LEXER_GEN = $(LEXER_DIR)/lex.yy.c
 PARSER_C  = $(PARSER_DIR)/parser.tab.c
 PARSER_H  = $(PARSER_DIR)/parser.tab.h
 
+# Sources of the compiler (the parser and lexer are generated from parser.y and Lexer.l)
+COMPILER_SRC = $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp \
+               $(SEM_DIR)/Layout.cpp $(GEN_DIR)/MipsGen.cpp $(GEN_DIR)/Runtime.cpp
+
 # Headers are prerequisites so that editing one rebuilds the binaries.
 HEADERS = $(wildcard $(LEXER_DIR)/*.hpp $(IR_DIR)/*.hpp $(SEM_DIR)/*.hpp $(GEN_DIR)/*.hpp)
 
 .PHONY: all test test-lexer test-parser test-semantic ir check check-archived clean
 
-all: lexer parser
+all: lexer compiler
 
-# On Windows the real files are lexer.exe / parser.exe, so "make lexer" and "make parser" are aliases.
+# On Windows the real files are lexer.exe / compiler.exe, so "make lexer" and "make compiler" are aliases.
 # On Linux the target name is the file name itself and needs no alias.
 ifneq ($(EXE),)
-.PHONY: lexer parser
+.PHONY: lexer compiler
 lexer: lexer$(EXE)
-parser: parser$(EXE)
+compiler: compiler$(EXE)
 endif
 
 # Standalone lexer (prints the token table)
@@ -46,12 +54,12 @@ lexer$(EXE): $(LEXER_GEN) $(PARSER_H) $(LEXER_DIR)/Token.cpp $(LEXER_DIR)/main.c
 		$(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(LEXER_DIR)/main.cpp $(LDFLAGS) -o lexer$(EXE)
 	@$(call WARMUP,./lexer$(EXE))
 
-# Compiler front end: lexer + parser + semantic checks + IR generation
+# The compiler: lexer + parser + semantic checks + IR generation + MIPS code generation + runtime library
 
-parser$(EXE): $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(GEN_DIR)/MipsGen.cpp $(GEN_DIR)/Runtime.cpp $(HEADERS)
+compiler$(EXE): $(COMPILER_SRC) $(HEADERS)
 	$(CXX) $(CXXFLAGS) -I$(LEXER_DIR) -I$(PARSER_DIR) -I$(IR_DIR) \
-		$(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp $(SEM_DIR)/Layout.cpp $(GEN_DIR)/MipsGen.cpp $(GEN_DIR)/Runtime.cpp $(LDFLAGS) -o parser$(EXE)
-	@$(call WARMUP,./parser$(EXE))
+		$(COMPILER_SRC) $(LDFLAGS) -o compiler$(EXE)
+	@$(call WARMUP,./compiler$(EXE) --check)
 
 $(PARSER_C) $(PARSER_H): $(PARSER_DIR)/parser.y
 	$(BISON) -d -o $(PARSER_C) $<
@@ -59,10 +67,13 @@ $(PARSER_C) $(PARSER_H): $(PARSER_DIR)/parser.y
 $(LEXER_GEN): $(LEXER_DIR)/Lexer.l $(PARSER_H)
 	$(FLEX) -o $@ $<
 
-# make test: generate the IR for test.c only (writes ./test.TAC)
-test: parser
-	@$(PARSER_BIN) test.c test.TAC; s=$$?; \
-	if [ $$s -ne 0 ]; then echo "test.c: FAILED (see the error above)"; fi; exit $$s
+# make test: compile test.c to test.s and, if SPIM is installed, run it
+test: compiler
+	@$(COMPILER_BIN) test.c -o test.s; s=$$?; \
+	if [ $$s -ne 0 ]; then echo "test.c: FAILED (see the error above)"; exit $$s; fi; \
+	if command -v spim >/dev/null 2>&1; then \
+		spim -quiet -file test.s | sed '/^SPIM Version/d;/^Copyright 1990/d;/^All Rights Reserved/d;/^See the file README/d;/^Loaded:/d'; \
+	else echo "spim is not installed: run  spim -file test.s  on a machine that has it"; fi
 
 # make test-lexer: run the standalone lexer over tests/lexer/*.c and show lexical errors
 test-lexer: lexer
@@ -80,13 +91,13 @@ test-lexer: lexer
 	echo ""; echo "Lexer: $$total file(s), $$bad with lexical errors"
 
 # make test-parser: syntax-check tests/parser/*.c ("_invalid" files must be rejected)
-test-parser: parser
+test-parser: compiler
 	@total=0; bad=0; \
 	for f in tests/parser/*.c; do \
 		[ -e "$$f" ] || continue; \
 		total=$$((total + 1)); \
 		echo "== $$f"; \
-		$(PARSER_BIN) "$$f" /dev/null > /dev/null 2> .parser.err; s=$$?; \
+		$(COMPILER_BIN) --check "$$f" > /dev/null 2> .parser.err; s=$$?; \
 		cat .parser.err; \
 		case "$$f" in \
 			*_invalid*) if [ $$s -ne 0 ]; then echo "   -> PASS (error correctly detected)"; \
@@ -98,26 +109,26 @@ test-parser: parser
 	echo ""; echo "Parser: $$total file(s), $$bad failed"; [ $$bad -eq 0 ]
 
 # make test-semantic: semantic-check tests/semantic/*.c, print every error found
-test-semantic: parser
+test-semantic: compiler
 	@total=0; bad=0; \
 	for f in tests/semantic/*.c; do \
 		[ -e "$$f" ] || continue; \
 		total=$$((total + 1)); \
 		echo "== $$f"; \
-		$(PARSER_BIN) "$$f" /dev/null > /dev/null 2> .sem.err; s=$$?; \
+		$(COMPILER_BIN) --check "$$f" > /dev/null 2> .sem.err; s=$$?; \
 		cat .sem.err; \
 		if [ $$s -eq 0 ]; then echo "   -> PASS (no errors)"; \
 		else echo "   -> FAIL"; bad=$$((bad + 1)); fi; \
 	done; rm -f .sem.err; \
 	echo ""; echo "Semantic: $$total file(s), $$bad with errors"; [ $$bad -eq 0 ]
 
-# make ir: IR for every tests/semantic/*.c, written to ./<name>.TAC.
+# make ir: three-address code for every tests/semantic/*.c, written to ./<name>.TAC.
 # If a phase fails, the .TAC file holds the diagnostics instead, headed by the failing phase.
-ir: parser
+ir: compiler
 	@for f in tests/semantic/*.c; do \
 		[ -e "$$f" ] || continue; \
 		out=$$(basename "$$f" .c).TAC; \
-		$(PARSER_BIN) "$$f" "$$out" > /dev/null 2> .ir.err; s=$$?; \
+		$(COMPILER_BIN) --check --tac "$$out" "$$f" > /dev/null 2> .ir.err; s=$$?; \
 		if [ $$s -eq 0 ]; then echo "OK      $$f -> $$out"; \
 		else \
 			phase=$$(grep -o -m1 'LEXICAL\|SYNTAX\|SEMANTIC' .ir.err | head -1); \
@@ -126,17 +137,17 @@ ir: parser
 		fi; \
 	done; rm -f .ir.err
 
-# make check: the regression suite in tests/
-check: parser
-	./run.sh --test $(PARSER_BIN)
+# make check: the test suite in tests/ (needs spim for the end-to-end tests; they are skipped without it)
+check: compiler
+	./run.sh $(COMPILER_BIN)
 
 # make check-archived: the archived front-end suite (archived_tests/25_OCT, golden IR comparison)
-check-archived: parser
-	./run.sh --archived $(PARSER_BIN)
+check-archived: compiler
+	./run.sh --archived $(COMPILER_BIN)
 
 clean:
 	rm -f $(LEXER_GEN) $(PARSER_C) $(PARSER_H)
-	rm -f lexer lexer.exe parser parser.exe
-	rm -f *.TAC .lexer.err .parser.err .sem.err .ir.err
+	rm -f lexer lexer.exe compiler compiler.exe
+	rm -f *.TAC .lexer.err .parser.err .sem.err .ir.err test.s
 	rm -rf tests/ir_output
 	rm -f tests/parser/*.tac

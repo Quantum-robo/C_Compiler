@@ -339,6 +339,10 @@ void Gen::emitCopy(long n) {
     ins("bnez $t7, " + l);
 }
 
+// Start a function: lay out its stack frame (parameters at positive offsets from $fp, then locals and
+// temporaries below it), then emit the label and the prologue that saves $ra and $fp and reserves the frame.
+// 'hidden' is set for a function returning a struct by value, which receives the result address as an extra
+// first argument.
 void Gen::beginFunction(const FuncInfo& f, bool hidden) {
     locs.clear();
     pending = 0;
@@ -460,6 +464,8 @@ void Gen::genStoreMem(const TACInstruction& in, bool indexed) {
     ins(std::string(in.sz == 1 ? "sb" : (in.sz == 2 ? "sh" : "sw")) + " $t0, 0($t1)");
 }
 
+// An arithmetic, logical or comparison instruction (binary, or the unary ~ and !): both operands go to
+// $t0 / $t1, the result is computed in $t0 and stored back. Comparisons are built from slt, sltu and subu.
 void Gen::genBinary(const TACInstruction& in) {
     const std::string& op = in.op;
     if (in.arg2.empty()) {                           // unary: ~ !
@@ -529,6 +535,9 @@ void Gen::genReturn(const TACInstruction& in) {
     epilogue();
 }
 
+// Translate one TAC instruction: dispatch on its operation to the code for control flow, calls and returns,
+// copies (scalar or whole struct), address-of, loads and stores through pointers or array indexes, zero-fill,
+// and finally the arithmetic operators.
 void Gen::genInstr(const TACInstruction& in) {
     const std::string& op = in.op;
     if (op == "label") {
@@ -636,6 +645,9 @@ void Gen::emitData() {
     }
 }
 
+// Generate one unit (the program, or the runtime library): give every global its data label, emit the entry
+// point (program only), the global initialiser and finaliser, and every function (the runtime unit emits only
+// the functions in 'only'), then the data segment. Returns false if any error was reported.
 bool Gen::generate() {
     const std::vector<VarInfo>& gv = tac.globalVars();
     for (size_t i = 0; i < gv.size(); ++i) {

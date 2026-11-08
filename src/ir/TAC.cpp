@@ -75,6 +75,8 @@ static std::string ptrExpr(const std::string& p, int off) {
     return "(" + p + (off < 0 ? " - " : " + ") + std::to_string(off < 0 ? -off : off) + ")";
 }
 
+// Print one instruction in the readable three-address form: copies and operators as "x = a op b", memory
+// accesses with their size tag (":1" for a byte), jumps, calls with their PopParams, function begin and end.
 void TACInstruction::print(FILE* out) const {
     if (op == "=") {
         fprintf(out, "    %s = %s\n", result.c_str(), arg1.c_str());

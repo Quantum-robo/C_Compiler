@@ -5,7 +5,7 @@
 *.out
 *.exe
 /lexer
-/parser
+/compiler
 bin/
 build/
 
@@ -30,3 +30,4 @@ tests/parser/*.tac
 *.swp
 *~
 .DS_Store
+/test.s

@@ -5,7 +5,7 @@ into MIPS32 assembly for the **SPIM** simulator. The runtime library (`src/codeg
 every output, so one `.s` file is a complete program.
 
 ```bash
-./parser -S prog.s prog.c      # compile prog.c; writes the TAC (prog.tac) and the assembly (prog.s)
+./compiler prog.c              # compile prog.c; writes the assembly (prog.s); add --tac prog.tac for the TAC
 spim -file prog.s              # run it  (sudo apt install spim)
 ```
 
