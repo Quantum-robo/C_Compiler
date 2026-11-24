@@ -71,7 +71,7 @@ make check-archived               # the older front-end suite in archived_tests/
 | `tests/ir/`         | 5     | The three-address code, struct layouts and symbol tables equal `expected/<name>.tac`      |
 | `tests/parser/`     | 5     | Syntax: files with `_invalid` in the name are rejected, the others accepted               |
 | `tests/semantic/`   | 14    | Feature programs that must compile                                                       |
-| `tests/lexer/`      | 5     | Inputs for the standalone lexer (`make test-lexer`)                                      |
+| `tests/lexer/`      | 5     | The standalone lexer: `test5_errors` and `test3_Literals` (first line `// EXPECT:`) must report lexical errors, the others none |
 | `archived_tests/`   | 125   | The earlier front-end suite (golden TAC, semantic error and warning programs)           |
 
 `./run.sh --update ./compiler` re-saves the expected TAC of `tests/ir` and the expected output of `tests/codegen` after a

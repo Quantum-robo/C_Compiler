@@ -9,6 +9,8 @@ FILE* diag_out = stderr;
 // installs the real function; the standalone lexer leaves it null and sees only plain identifiers.
 bool (*type_name_hook)(const char*) = nullptr;
 
+// Returns the printable name of a token kind ("TOKEN_KW_INT", "TOKEN_IDENTIFIER", ...), used by the standalone
+// lexer's token table. One case per TokenType, grouped like TokenType.hpp; unknown values give "TOKEN_UNKNOWN".
 const char* tokenTypeToString(TokenType type)
 {
     switch (type)

@@ -2,7 +2,8 @@
 """Lists the functions longer than 30 lines that have no comment directly above them.
 
 The assignment asks for a comment on every function definition of more than 30 lines.  A function is found as
-a line that starts in column 0, contains '(' and ends with '{', up to the closing '}' in column 0.  It counts as
+a line that starts in column 0, contains '(' and ends with '{' (or is followed by a line holding only '{'),
+up to the closing '}' in column 0.  It counts as
 commented when the nearest non-blank line above it is a comment (// ..., or the end of a /* ... */ block).
 
     python3 scripts/long_functions.py            # checks src/ (exit status 1 if something is missing)
@@ -15,6 +16,7 @@ import sys
 LIMIT = 30
 FILES = (".cpp", ".hpp", ".y", ".l")
 SIGNATURE = re.compile(r"^[A-Za-z_~][\w:<>,\*&\s~]*\(.*\)\s*(const)?\s*(\{|[^;{}]*\{)\s*$")
+SIGNATURE_NO_BRACE = re.compile(r"^[A-Za-z_~][\w:<>,\*&\s~]*\(.*\)\s*(const)?\s*$")
 KEYWORDS = ("if", "for", "while", "switch", "else", "do", "return", "struct", "class", "enum", "namespace")
 
 
@@ -30,7 +32,10 @@ def functions(path):
     while i < len(lines):
         line = lines[i]
         first = line.split("(")[0].split()
-        if (SIGNATURE.match(line) and line[0] not in " \t#}" and first and first[0] not in KEYWORDS
+        opens_here = SIGNATURE.match(line)
+        # Allman style: the signature on its own line, the opening brace alone on the next one
+        opens_next = SIGNATURE_NO_BRACE.match(line) and i + 1 < len(lines) and lines[i + 1].strip() == "{"
+        if ((opens_here or opens_next) and line[0] not in " \t#}" and first and first[0] not in KEYWORDS
                 and not line.startswith("%")):
             j = i
             while j < len(lines) and lines[j] != "}":

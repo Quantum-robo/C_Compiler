@@ -11,6 +11,8 @@
 #
 # Layout of tests/ (default run):
 #   tests/parser/*.c                       syntax tests; a name containing "_invalid" must be rejected
+#   tests/lexer/*.c                        run through the standalone ./lexer; "_errors" files and files with
+#                                          a "// EXPECT:" first line must report lexical errors, others none
 #   tests/semantic/*.c                     must compile (IR is generated but not compared)
 #   tests/errors/err_*.c                   must be rejected; the diagnostics must contain the "// EXPECT:" text
 #   tests/ir/*.c                           the IR and the layout / symbol tables (--tables) must equal
@@ -169,6 +171,33 @@ for f in "$TESTS"/parser/*.c; do
         else fail "$name (valid program was rejected)"; show "$TMP.err"; fi
     fi
 done
+
+# ---- 1b. lexer tests: the standalone lexer (built next to the compiler by 'make') over tests/lexer ----
+# A file whose first line is "// EXPECT: <text>" must be rejected with that text in the diagnostics; a name
+# containing "_errors" must produce lexical errors; every other file must produce none.
+group "Lexer tests ($TESTS/lexer)"
+LEXER="$(dirname "$PARSER")/lexer"
+[ -x "$LEXER" ] || LEXER="$LEXER.exe"
+if [ ! -x "$LEXER" ]; then
+    echo "  SKIP  the standalone lexer is not built (run 'make'): the lexer tests were not run"
+else
+    for f in "$TESTS"/lexer/*.c; do
+        [ -e "$f" ] || continue
+        total=$((total + 1))
+        name=$(basename "$f")
+        want=$(head -1 "$f" | tr -d '\015' | sed -n 's#^// EXPECT: *##p')
+        [ -z "$want" ] && [[ "$name" == *_errors* ]] && want="LEXICAL ERROR"
+        "$LEXER" "$f" > /dev/null 2> "$TMP.err"; status=$?
+        if [ -n "$want" ]; then
+            if [ $status -eq 0 ]; then fail "$name (lexical errors were not detected)"
+            elif grep -qF -- "$want" "$TMP.err"; then pass "$name (lexical errors correctly detected)"
+            else fail "$name (wrong message, wanted: $want)"; show "$TMP.err"; fi
+        else
+            if [ $status -eq 0 ]; then pass "$name"
+            else fail "$name (unexpected lexical errors)"; show "$TMP.err"; fi
+        fi
+    done
+fi
 
 fi
 

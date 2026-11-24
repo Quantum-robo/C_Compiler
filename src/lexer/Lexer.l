@@ -102,6 +102,23 @@ static void directive(const std::string& line)
     macros[name] = trim(text);
 }
 
+// A string literal is invalid if it has a "\x" escape with no hex digit after it (C requires at least one).
+// The lexer rule accepts any "\<char>", so the escapes are checked here, skipping "\\" and "\"" pairs.
+static void check_string_escapes(const char* text, int line)
+{
+    for (const char* p = text; *p; ++p) {
+        if (*p != '\\' || !p[1]) continue;
+        if (p[1] == 'x' && !isxdigit((unsigned char)p[2])) {
+            fprintf(diag_out,
+                "LEXICAL ERROR: invalid escape \\x without hex digits in string literal %s at line %d\n",
+                text, line);
+            has_error = 1;
+            return;
+        }
+        ++p;                                             // skip the escaped character
+    }
+}
+
 
 #define YY_USER_ACTION \
     current_col = colno; \
@@ -139,7 +156,10 @@ static void directive(const std::string& line)
         //currentToken = {TokenType::Unknown, yytext};return 1;
 }
     /*  STRING LITERALS  */
-\"([^\"\\\n]|\\.)*\" { return processToken(TokenType::StringLiteral, STRING_LITERAL); }
+\"([^\"\\\n]|\\.)*\" {
+    check_string_escapes(yytext, yylineno);
+    return processToken(TokenType::StringLiteral, STRING_LITERAL);
+}
 
 \"([^\"\\\n]|\\.)*\n {
     fprintf(diag_out,
@@ -154,13 +174,22 @@ static void directive(const std::string& line)
 }
 
     /*  CHARACTER LITERALS  */
+    /* '\x' with no hex digit: listed before the general rule, which would otherwise accept it as \\. */
+\'\\x\' {
+    fprintf(diag_out,
+        "LEXICAL ERROR: invalid character literal %s at line %d (\\x needs at least one hex digit)\n",
+        yytext,
+        yylineno);
+    has_error = 1;
+    return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);
+}
 \'([^\'\\\n]|\\.|\\x[0-9a-fA-F]+)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL); }
     /*\'([^\'\\\n]|\\.)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);}*/
 \'([^\'\\\n]|\\.){2,}\' {
     fprintf(diag_out,
         "LEXICAL ERROR: invalid character literal %s at line %d\n",
         yytext,
-        yylineno-1);
+        yylineno);   /* no newline in this match, so yylineno is already this line */
 
         has_error = 1;
 

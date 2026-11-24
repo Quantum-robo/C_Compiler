@@ -1,3 +1,4 @@
+// EXPECT: invalid character literal '\777' at line 39
 int a=123;
 int b=0xFF;
 float c=3.14;
