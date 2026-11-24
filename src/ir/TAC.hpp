@@ -105,6 +105,10 @@ public:
     const std::vector<TACInstruction>& code() const { return instructions; }
     const std::vector<TACInstruction>& initCode() const { return globalInstructions; }
 
+    // For the optimiser, which rewrites the functions' code and drops temporaries that are no longer used.
+    std::vector<TACInstruction>& mutableCode() { return instructions; }
+    std::vector<FuncInfo>& mutableFunctions() { return funcs; }
+
     void printTAC(FILE* out = stdout) const;
     void printTables(FILE* out, const LayoutTable& layouts) const;
     bool saveTAC(const std::string& filename, bool withTables, const LayoutTable& layouts) const;

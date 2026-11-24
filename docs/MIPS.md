@@ -14,7 +14,9 @@ spim -file prog.s              # run it  (sudo apt install spim)
 
 ## Scheme
 
-The generator is deliberately simple and always correct; it does not optimise.
+The generator is deliberately simple and always correct; it does not optimise itself (there is no register
+allocation). The three-address code it receives has already been optimised block by block (see
+[IR.md](IR.md#8-optimizer)), so there are fewer instructions to translate.
 
 * Every variable and every temporary has a slot in the stack frame (`$fp`-relative); globals and static locals live in
   the data segment as `G_<name>`.

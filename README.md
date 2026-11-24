@@ -13,9 +13,13 @@ constructors / destructors, references and `new` / `delete`) into **MIPS32 assem
 | **Simulator required**   | **SPIM** (`spim -file prog.s`); QtSpim and MARS load the same file |
 
 ```text
-source.c -> Lexer -> Parser + semantic checks -> TAC (typed) -> MIPS code generator -> source.s
-                                                                  + runtime library (printf, scanf, malloc, ...)
+source.c -> Lexer -> Parser + semantic checks -> TAC (typed) -> Optimizer -> MIPS code generator -> source.s
+                                                                               + runtime library (printf, scanf, malloc, ...)
 ```
+
+The optimizer works inside each basic block: **constant folding, constant propagation, copy propagation, common
+subexpression elimination and dead code elimination** (see [docs/IR.md](docs/IR.md#8-optimizer)). It is on by
+default; `-O0` turns it off.
 
 ## Requirements
 
@@ -48,6 +52,9 @@ Options of `./compiler`:
 | `--tac <file>`    | also write the three-address code to `<file>`                        |
 | `--print-tac`     | print the three-address code                                         |
 | `--tables`        | add the struct layouts and symbol tables to the TAC output           |
+| `-O0`             | do not optimise (the optimizer is on by default)                     |
+| `--opt-tac <file>`| write the optimised three-address code to `<file>`                   |
+| `--print-opt-tac` | print the optimised three-address code and what the optimizer did    |
 
 The exit status is 0 on success, 1 for a compile error, 2 for a bad command line. `main`'s return value becomes
 the exit status of the program under SPIM; `main(int argc, char **argv)` receives SPIM's arguments.
@@ -66,15 +73,16 @@ make check-archived               # the older front-end suite in archived_tests/
 
 | Folder              | Tests | What is checked                                                                          |
 | ------------------- | ----- | ---------------------------------------------------------------------------------------- |
-| `tests/codegen/`    | 48    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
+| `tests/codegen/`    | 49    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
 | `tests/errors/`     | 22    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
 | `tests/ir/`         | 5     | The three-address code, struct layouts and symbol tables equal `expected/<name>.tac`      |
+| `tests/opt/`        | 5     | The **optimised** three-address code (`--opt-tac`) equals `expected/<name>.tac`: one program per optimization |
 | `tests/parser/`     | 5     | Syntax: files with `_invalid` in the name are rejected, the others accepted               |
 | `tests/semantic/`   | 14    | Feature programs that must compile                                                       |
 | `tests/lexer/`      | 5     | The standalone lexer: `test5_errors` and `test3_Literals` (first line `// EXPECT:`) must report lexical errors, the others none |
 | `archived_tests/`   | 125   | The earlier front-end suite (golden TAC, semantic error and warning programs)           |
 
-`./run.sh --update ./compiler` re-saves the expected TAC of `tests/ir` and the expected output of `tests/codegen` after a
+`./run.sh --update ./compiler` re-saves the expected TAC of `tests/ir` and `tests/opt` and the expected output of `tests/codegen` after a
 change that was reviewed. `scripts/long_functions.py` lists functions longer than 30 lines that have no comment.
 
 ### Features and the tests that cover them
@@ -103,6 +111,7 @@ change that was reviewed. `scripts/long_functions.py` lists functions longer tha
 | Strings and the C library                 | `26_strings_ctype`, `27_malloc_free`, `41_macros_casts_names`      |
 | Character and string escapes (octal, hex) | `48_char_escapes`                                                  |
 | float and double, `%f` in printf / scanf, math functions | `46_float`, `47_float_edge`                  |
+| Optimizer (folding, propagation, CSE, dead code) | `49_optimizer` (and `tests/opt/` for the optimised TAC)     |
 
 ## The language
 
@@ -125,8 +134,9 @@ C_Compiler/
 │   ├── parser/       parser.y                            (grammar, semantic checks, IR generation, driver)
 │   ├── semantic/     Types.hpp, Layout.*                 (type model; sizes and field offsets)
 │   ├── ir/           TAC.hpp, TAC.cpp                    (three-address code, symbol tables)
+│   ├── optimizer/    Optimizer.*                         (local optimizations on the TAC)
 │   └── codegen/      MipsGen.*, Runtime.cpp              (TAC -> MIPS32; runtime library)
-├── tests/            codegen/ errors/ ir/ parser/ semantic/ lexer/
+├── tests/            codegen/ errors/ ir/ opt/ parser/ semantic/ lexer/
 ├── archived_tests/   25_OCT/                              (earlier front-end suite)
 ├── docs/             LANGUAGE_GUIDE.md  IR.md  MIPS.md
 ├── scripts/          long_functions.py
@@ -136,8 +146,8 @@ C_Compiler/
 ```
 
 How the compiler works: the program is read twice (the first pass only collects the layout of every class, so a method
-can use members declared after it), semantic checks and IR generation happen in the Bison actions, and the typed
-three-address code is then translated to MIPS. See [docs/IR.md](docs/IR.md) for the IR and [docs/MIPS.md](docs/MIPS.md) for
+can use members declared after it), semantic checks and IR generation happen in the Bison actions, the typed
+three-address code is optimized block by block, and is then translated to MIPS. See [docs/IR.md](docs/IR.md) for the IR and [docs/MIPS.md](docs/MIPS.md) for
 the code generator, the calling convention and the runtime library (which is itself written in this language and
 compiled with the program).
 

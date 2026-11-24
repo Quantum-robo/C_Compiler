@@ -23,6 +23,7 @@ PARSER_DIR = src/parser
 IR_DIR     = src/ir
 SEM_DIR    = src/semantic
 GEN_DIR    = src/codegen
+OPT_DIR    = src/optimizer
 
 LEXER_GEN = $(LEXER_DIR)/lex.yy.c
 PARSER_C  = $(PARSER_DIR)/parser.tab.c
@@ -30,10 +31,10 @@ PARSER_H  = $(PARSER_DIR)/parser.tab.h
 
 # Sources of the compiler (the parser and lexer are generated from parser.y and Lexer.l)
 COMPILER_SRC = $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp \
-               $(SEM_DIR)/Layout.cpp $(GEN_DIR)/MipsGen.cpp $(GEN_DIR)/Runtime.cpp
+               $(SEM_DIR)/Layout.cpp $(OPT_DIR)/Optimizer.cpp $(GEN_DIR)/MipsGen.cpp $(GEN_DIR)/Runtime.cpp
 
 # Headers are prerequisites so that editing one rebuilds the binaries.
-HEADERS = $(wildcard $(LEXER_DIR)/*.hpp $(IR_DIR)/*.hpp $(SEM_DIR)/*.hpp $(GEN_DIR)/*.hpp)
+HEADERS = $(wildcard $(LEXER_DIR)/*.hpp $(IR_DIR)/*.hpp $(SEM_DIR)/*.hpp $(GEN_DIR)/*.hpp $(OPT_DIR)/*.hpp)
 
 .PHONY: all test test-lexer test-parser test-semantic ir check check-archived clean
 

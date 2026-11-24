@@ -131,6 +131,8 @@ The symbol table is built while the parser reads the program (in `src/parser/par
 | `make clean`                  | Remove binaries, generated sources, `./*.TAC` and `tests/ir_output/`.                            |
 | `./compiler prog.c`           | Compile to `prog.s`; run it with `spim -file prog.s`. `-o file` names the output.                |
 | `./compiler --check prog.c`   | Only check the program (syntax, types, IR). `--tac file`, `--print-tac`, `--tables` show the IR. |
+| `./compiler --check --print-opt-tac prog.c` | Show the optimised IR and a summary of what the optimizer did (`--opt-tac file` writes it). |
+| `./compiler -O0 prog.c`       | Compile without the optimizer.                                                                   |
 | `./lexer prog.c`              | Print the token table of one file.                                                               |
 | `./run.sh ./compiler`         | Run the whole test suite; exits 0 only if every test passes.                                     |
 | `./run.sh file.c`             | Print the IR of one file (or every `.c` in a folder) and save it as `./<name>.TAC`.              |

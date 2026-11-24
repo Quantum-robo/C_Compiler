@@ -17,7 +17,8 @@
 #   tests/errors/err_*.c                   must be rejected; the diagnostics must contain the "// EXPECT:" text
 #   tests/ir/*.c                           the IR and the layout / symbol tables (--tables) must equal
 #                                          tests/ir/expected/<name>.tac
-#   tests/codegen/*.c                      compiled to MIPS (-o), run on SPIM (stdin from <name>.in if it exists);
+#   tests/opt/*.c                          the optimised IR (--opt-tac) must equal tests/opt/expected/<name>.tac
+#   tests/codegen/*.c                     compiled to MIPS (-o), run on SPIM (stdin from <name>.in if it exists);
 #                                          the output must equal tests/codegen/<name>.expected
 #
 # Layout of archived_tests/25_OCT (run with --archived):
@@ -294,6 +295,28 @@ for f in "$TESTS"/ir/*.c; do
         pass "$name"
     else
         fail "$name (IR differs from expected)"; show "$TMP.diff" 20
+    fi
+done
+
+# ---- 6a. optimizer tests: the optimised IR must match the reviewed expected output ----
+group "Optimizer tests: optimised IR vs expected ($TESTS/opt)"
+for f in "$TESTS"/opt/*.c; do
+    [ -e "$f" ] || continue
+    total=$((total + 1))
+    name=$(basename "$f" .c)
+    mkdir -p "$OUT/opt" "$TESTS/opt/expected"
+    out="$OUT/opt/$name.tac"
+    exp="$TESTS/opt/expected/$name.tac"
+    if ! compile "$f" "$TMP.tac" "$TMP.err" "--check --opt-tac $out"; then
+        fail "$name (rejected)"; show "$TMP.err"
+    elif [ $UPDATE -eq 1 ]; then
+        cp "$out" "$exp"; pass "$name (expected IR updated)"
+    elif [ ! -f "$exp" ]; then
+        fail "$name (no expected IR; review the output, then run with --update)"
+    elif diff --strip-trailing-cr -u "$exp" "$out" > "$TMP.diff"; then
+        pass "$name"
+    else
+        fail "$name (optimised IR differs from expected)"; show "$TMP.diff" 20
     fi
 done
 

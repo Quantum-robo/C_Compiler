@@ -24,6 +24,7 @@
 #include "../semantic/Types.hpp"
 #include "../semantic/Layout.hpp"
 #include "../codegen/MipsGen.hpp"
+#include "../optimizer/Optimizer.hpp"
 
 extern int yylex();
 extern int yylineno;
@@ -3421,6 +3422,9 @@ struct Options {
     bool check = false;        // --check: front end only, no assembly
     bool printTac = false;     // --print-tac
     bool tables = false;       // --tables: layouts and symbol tables in the TAC output
+    bool optimize = true;      // -O0 turns the optimiser off (the assembly is then made from the TAC as it is)
+    std::string optTacPath;    // --opt-tac: where the optimised three-address code goes
+    bool printOptTac = false;  // --print-opt-tac
     bool help = false;
     bool bad = false;
 };
@@ -3436,6 +3440,9 @@ static void printUsage(FILE* out) {
         "  --tac <file>    also write the three-address code to <file>\n"
         "  --print-tac     print the three-address code\n"
         "  --tables        add the struct layouts and symbol tables to the three-address code\n"
+        "  -O0             do not optimise (the optimiser is on by default)\n"
+        "  --opt-tac <file>  write the optimised three-address code to <file>\n"
+        "  --print-opt-tac print the optimised three-address code and what the optimiser did\n"
         "  -h, --help      this text\n"
         "Without <source.c> the program is read from standard input.\n");
 }
@@ -3450,6 +3457,10 @@ static Options parseArguments(int argc, char** argv) {
         else if (a == "--check") o.check = true;
         else if (a == "--print-tac") o.printTac = true;
         else if (a == "--tables") o.tables = true;
+        else if (a == "-O0") o.optimize = false;
+        else if (a == "-O" || a == "-O1") o.optimize = true;
+        else if (a == "--opt-tac") { if (hasValue) o.optTacPath = argv[++i]; else o.bad = true; }
+        else if (a == "--print-opt-tac") o.printOptTac = true;
         else if (a == "-h" || a == "--help") o.help = true;
         else if (a.size() > 1 && a[0] == '-') o.bad = true;
         else if (o.source.empty()) o.source = a;
@@ -3481,8 +3492,15 @@ static FILE* openSource(const Options& o) {
     return f;
 }
 
-// Compile the runtime library with the same machinery and write program + runtime to 'path'.
-static bool writeAssembly(const std::string& path) {
+static void printOptStats(FILE* out, const OptStats& s) {
+    fprintf(out, "# optimizer: %d folded, %d constants propagated, %d copies propagated, %d common subexpressions, "
+                 "%d branches resolved, %d dead instructions removed, %d temporaries freed\n",
+            s.folded, s.constProp, s.copyProp, s.cse, s.branches, s.deadCode, s.deadTemps);
+}
+
+// Compile the runtime library with the same machinery and write program + runtime to 'path'. With 'optimize',
+// both the program's and the runtime's three-address code go through the optimiser first.
+static bool writeAssembly(const std::string& path, bool optimize) {
     std::vector<std::string> errors;
     bool ok = false;
     FILE* out = fopen(path.c_str(), "w");
@@ -3495,10 +3513,15 @@ static bool writeAssembly(const std::string& path) {
     LayoutTable progLayouts = finalLayouts;
     TACGenerator rtTac;
     LayoutTable rtLayouts;
-    if (!compileRuntime(rtTac, rtLayouts))
+    if (!compileRuntime(rtTac, rtLayouts)) {
         errors.push_back("internal error: the runtime library failed to compile");
-    else
+    } else {
+        if (optimize) {
+            optimizeTAC(progTac);
+            optimizeTAC(rtTac);
+        }
         ok = generateMips(progTac, progLayouts, rtTac, rtLayouts, out, errors);
+    }
     fclose(out);
     if (!ok) {
         for (size_t i = 0; i < errors.size(); ++i) fprintf(stderr, "CODE GENERATION ERROR: %s\n", errors[i].c_str());
@@ -3532,11 +3555,20 @@ int main(int argc, char** argv) {
         if (opt.tables) tacGen.printTables(stdout, finalLayouts);
     }
     if (!opt.tacPath.empty() && !tacGen.saveTAC(opt.tacPath, opt.tables, finalLayouts)) return 1;
+    if (opt.printOptTac || !opt.optTacPath.empty()) {        // the optimised IR (the TAC above is left as it is)
+        TACGenerator optimized = tacGen;
+        OptStats stats = optimizeTAC(optimized);
+        if (opt.printOptTac) {
+            optimized.printTAC(stdout);
+            printOptStats(stdout, stats);
+        }
+        if (!opt.optTacPath.empty() && !optimized.saveTAC(opt.optTacPath, opt.tables, finalLayouts)) return 1;
+    }
     if (opt.check) {
         printf("Checked %s: no errors, %d warning(s)\n", opt.source.empty() ? "<stdin>" : opt.source.c_str(), sem_warnings);
         return 0;
     }
-    if (!writeAssembly(opt.asmPath)) return 1;
+    if (!writeAssembly(opt.asmPath, opt.optimize)) return 1;
     printf("Compiled %s -> %s (%d warning(s))\n", opt.source.empty() ? "<stdin>" : opt.source.c_str(),
            opt.asmPath.c_str(), sem_warnings);
     return 0;

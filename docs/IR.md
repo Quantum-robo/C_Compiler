@@ -131,3 +131,38 @@ Variable kinds that the code generator must tell apart when it uses a name as an
 * Pointer arithmetic on a pointer to an array (`int (*p)[3]`) is approximate (a multi-dimensional array name is handled).
 * An array size must be an integer constant (a literal, an enumerator, or a `const int` with a constant value).
 * A function pointer is an untyped 4-byte address.
+
+## 8. Optimizer
+
+`src/optimizer/Optimizer.{hpp,cpp}` rewrites the TAC of every function before code generation. It is on by default
+(`-O0` turns it off). `--print-opt-tac` / `--opt-tac <file>` show the result; `--print-tac` / `--tac` still show the IR
+as the parser produced it.
+
+```bash
+./compiler --check --print-opt-tac prog.c      # optimised TAC + a summary line of what was done
+./compiler -O0 prog.c                          # assembly from the unoptimised TAC
+```
+
+All optimizations are **local**: facts are kept only inside one basic block (they are forgotten at every label and
+after every jump), so no data-flow analysis across blocks is needed.
+
+| Optimization | Example (before -> after) |
+| --- | --- |
+| Constant folding | `t = 10 * 4` -> `t = 40` (32-bit wrap-around; `/` and `%` truncate; division by zero is left alone) |
+| Constant propagation | `b = 10; t = b * 4` -> `b = 10; t = 10 * 4` (then folded) |
+| Copy propagation | `b = a; t = b + 1` -> `b = a; t = a + 1` |
+| Common subexpression elimination | `t1 = w * h; ...; t3 = h * w` -> `t3 = t1` (`+ * & \| ^ == !=` are commutative; `&x` is reused too) |
+| Branch on a constant | `IfFalse 1 Goto L` is removed, `IfFalse 0 Goto L` becomes `Goto L` |
+| Dead code elimination | removes a result that is never read (a temporary or a local), `x = x`, code after `Goto` / `Return` that no label reaches, a jump to the next instruction and labels no jump uses; an unread call result is dropped but the call stays |
+
+Temporaries that no instruction mentions any more get no stack slot. The pass is repeated until nothing changes.
+
+**Which variables are optimized.** Only one-word integers and pointers that are locals, parameters or temporaries of the
+function, are not references and whose address is never taken (`&x`). Their value can only change through an
+assignment the optimizer sees, so a call or a store through a pointer can never invalidate what it knows. Globals,
+static locals, arrays, structs, `char` / `short` / `bool` (narrower than a word: storing truncates) and
+`float` / `double` are left as they are. Memory loads (`*p`, `a[i]`) are never reused, because a store may change memory.
+
+Tests: `tests/opt/` (one program per optimization; the optimised TAC must equal `tests/opt/expected/<name>.tac`) and
+`tests/codegen/49_optimizer` (run on SPIM, output compared with g++, including the cases where optimizing would be wrong).
+Every end-to-end test gives the same output with and without the optimizer.
