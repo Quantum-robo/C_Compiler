@@ -6,8 +6,12 @@
 #   ./run.sh <file.c | folder>               print the IR of that file, or of every .c file in the
 #                                            folder and save each as ./<name>.TAC (run 'make' first)
 #   ./run.sh --archived <executable>         run the archived front-end suite (archived_tests/25_OCT)
-#   ./run.sh --update <exe>                  re-bless the expected IR of tests/ir (only after review)
-#   ./run.sh --update --archived <exe>       re-bless the archived expected IR (only after review)
+#   ./run.sh --update <exe>                  re-save the expected output of tests/ir, tests/opt and
+#                                            tests/codegen from the current compiler (only after review)
+#   ./run.sh --update --archived <exe>       re-save the archived expected IR (only after review)
+#
+# The tests are found next to this script, so it can be started from any folder. It exits with 0 only if
+# at least one test ran and every test passed.
 #
 # Layout of tests/ (default run):
 #   tests/parser/*.c                       syntax tests; a name containing "_invalid" must be rejected
@@ -30,7 +34,8 @@
 #   semantic_errors/warn_*.c               must be accepted, with that warning
 #   semantic_valid/ok_*.c                  must be accepted with no diagnostics at all
 #
-# Related make targets: make check, make check-archived, make test-parser, make test-semantic, make ir.
+# Related make targets: make check, make check-archived, make test-lexer, make test-parser, make test-semantic,
+# make ir.
 # The generated IR is written to tests/ir_output/ (ignored by git).
 
 UPDATE=0
@@ -70,7 +75,8 @@ if [ $TEST_MODE -eq 0 ]; then
     elif [ -f "$TARGET" ]; then
         files="$TARGET"
     else
-        echo "Error: '$TARGET' is not a file or folder."
+        echo "Error: '$TARGET' does not exist: give the compiler executable (e.g. ./compiler, built by 'make'),"
+        echo "       a .c file or a folder."
         exit 1
     fi
     if [ -z "$files" ]; then
@@ -111,6 +117,11 @@ if [ ! -x "$PARSER" ]; then
     echo "Error: executable '$PARSER' not found or not executable (run 'make' first)."
     exit 1
 fi
+
+# The tests live next to this script: make the executable's path absolute, then work from the script's folder,
+# so that "./run.sh ./compiler", "make check" and "/path/to/run.sh /path/to/compiler" all find them.
+PARSER="$(cd "$(dirname "$PARSER")" && pwd)/$(basename "$PARSER")"
+cd "$(dirname "$0")" || exit 1
 
 # The OS (application control / antivirus) can block a freshly built executable for a while.
 # Probe it first so that a blocked launch is reported once, not as a failure of every test.
@@ -328,7 +339,7 @@ for f in "$TESTS"/errors/*.c; do
     [ -e "$f" ] || continue
     total=$((total + 1))
     name=$(basename "$f" .c)
-    want=$(head -1 "$f" | tr -d '' | sed -n 's#^// EXPECT: *##p')
+    want=$(head -1 "$f" | tr -d '\015' | sed -n 's#^// EXPECT: *##p')
     compile "$f" "$TMP.tac" "$TMP.err" --check
     status=$?
     if [ -z "$want" ]; then fail "$name (missing '// EXPECT:' header)"
@@ -390,7 +401,10 @@ echo "Passed: $passed"
 echo "Failed: $failed"
 echo ""
 
-if [ $failed -eq 0 ]; then
+if [ $total -eq 0 ]; then
+    echo "No tests were found in $(pwd)/tests: nothing was checked."
+    exit 1
+elif [ $failed -eq 0 ]; then
     echo "All tests passed!"
     exit 0
 else

@@ -62,8 +62,13 @@ compiler$(EXE): $(COMPILER_SRC) $(HEADERS)
 		$(COMPILER_SRC) $(LDFLAGS) -o compiler$(EXE)
 	@$(call WARMUP,./compiler$(EXE) --check)
 
-$(PARSER_C) $(PARSER_H): $(PARSER_DIR)/parser.y
+# One bison run writes both files. The header is made by the rule of the .c file, so that a parallel build
+# (make -j) does not start bison twice at the same time.
+$(PARSER_C): $(PARSER_DIR)/parser.y
 	$(BISON) -d -o $(PARSER_C) $<
+
+$(PARSER_H): $(PARSER_C)
+	@[ -f $@ ] || $(BISON) -d -o $(PARSER_C) $(PARSER_DIR)/parser.y
 
 $(LEXER_GEN): $(LEXER_DIR)/Lexer.l $(PARSER_H)
 	$(FLEX) -o $@ $<
