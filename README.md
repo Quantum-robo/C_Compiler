@@ -73,8 +73,8 @@ make check-archived               # the older front-end suite in archived_tests/
 
 | Folder              | Tests | What is checked                                                                          |
 | ------------------- | ----- | ---------------------------------------------------------------------------------------- |
-| `tests/codegen/`    | 49    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
-| `tests/errors/`     | 22    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
+| `tests/codegen/`    | 50    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
+| `tests/errors/`     | 25    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
 | `tests/ir/`         | 5     | The three-address code, struct layouts and symbol tables equal `expected/<name>.tac`      |
 | `tests/opt/`        | 5     | The **optimised** three-address code (`--opt-tac`) equals `expected/<name>.tac`: one program per optimization |
 | `tests/parser/`     | 5     | Syntax: files with `_invalid` in the name are rejected, the others accepted               |
@@ -110,6 +110,7 @@ change that was reviewed. `scripts/long_functions.py` lists functions longer tha
 | enum, union                               | `20_enum_union`, `40_enum_union_static`                            |
 | Strings and the C library                 | `26_strings_ctype`, `27_malloc_free`, `41_macros_casts_names`      |
 | Character and string escapes (octal, hex) | `48_char_escapes`                                                  |
+| `bool` conversions, `struct S { ... } var;`, `strtod` | `50_regressions`                                   |
 | float and double, `%f` in printf / scanf, math functions | `46_float`, `47_float_edge`                  |
 | Optimizer (folding, propagation, CSE, dead code) | `49_optimizer` (and `tests/opt/` for the optimised TAC)     |
 

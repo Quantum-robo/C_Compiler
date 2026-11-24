@@ -14,14 +14,15 @@ C++ but are **not supported**; each row shows what to write instead.
 | Inheritance, virtual functions, templates, operator overloading | `class B : public A { };`   | write the classes independently                     |
 | `typedef`                                       | `typedef int myint;`                        | use the underlying type (a `#define` works for a name) |
 | Function-like macros                            | `#define MAX(a, b) ...`                     | write a function                                    |
-| Unsigned arithmetic                             | `unsigned int u;` is accepted but signed    | use `int`; `(unsigned char)` / `(unsigned short)` casts do mask |
+| Unsigned arithmetic                             | `unsigned int u;` is accepted but signed; `unsigned char c = 200;` reads back as -56 | use `int`; `(unsigned char)` / `(unsigned short)` casts do mask |
 | Pointers to arrays                              | `int (*row)[3] = grid;`                     | `int *row = grid[1];` or index the array            |
 | `cond ? a : b` as an lvalue                     | `return c ? x : y;` in a function returning `int &` | use `if` / `else`                            |
 | Enumerator values that are not plain literals   | `enum E { A = 1 << 3 };`                    | `A = 8` (otherwise a warning, names stay in the IR) |
 | `sscanf`, `fprintf`, `fopen`, `atan` / `asin` / `acos` / `atan2` | `atan(1.0)`                  | not provided by the runtime library                 |
 | `long double`                                   | `long double x;`                            | use `double`                                        |
 
-Also accepted since they are common: `class B;` forward declarations, anonymous `struct { } name;` / `union { } name;`
+Also accepted since they are common: `class B;` forward declarations, a definition followed by variables
+(`struct S { int a; } s, *p;`, also for `class` and `union`), anonymous `struct { } name;` / `union { } name;`
 members and anonymous `enum { A, B };`, casts `(int*)malloc(n)`, `(char)x`, `(bool)n`, and object-like macros
 (`#define SIZE 10`, expanded wherever the name appears; `#include` and conditional-compilation lines are ignored).
 A struct, class, union or enum name can be used as a type without the keyword (`Counter c;`, `Node *n;`), and a variable

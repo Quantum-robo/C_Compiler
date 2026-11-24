@@ -338,7 +338,12 @@ static void check_string_escapes(const char* text, int line)
 [0-9]+\.([eE][+-]?[0-9]+)?[fFlL]?         { return processToken(TokenType::FloatLiteral, FLOAT_LITERAL); }
 [0-9]+[eE][+-]?[0-9]+[fFlL]?              { return processToken(TokenType::FloatLiteral, FLOAT_LITERAL); }
 
-    /* Integer */
+    /* Integer (a leading 0 makes it octal, so the digits 8 and 9 are not allowed after it) */
+0[0-7]*[89][0-9]* {
+    fprintf(diag_out, "LEXICAL ERROR: invalid digit in octal constant %s at line %d\n", yytext, yylineno);
+    has_error = 1;
+    return processToken(TokenType::IntegerLiteral, INTEGER_LITERAL);
+}
 [0-9]+                                    { return processToken(TokenType::IntegerLiteral, INTEGER_LITERAL); }
 
 

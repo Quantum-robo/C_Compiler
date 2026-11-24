@@ -310,7 +310,7 @@ static bool isBuiltinName(const std::string& n) {
         "printf", "scanf", "fprintf", "fscanf", "sprintf", "snprintf", "sscanf", "puts", "putchar",
         "getchar", "gets", "fgets", "fputs", "fopen", "fclose", "fread", "fwrite", "fflush", "fgetc",
         "fputc", "feof", "remove", "rename", "malloc", "calloc", "realloc", "free", "exit", "abort",
-        "atexit", "atoi", "atof", "atol", "abs", "labs", "rand", "srand", "time", "clock", "sqrt",
+        "atexit", "atoi", "atof", "strtod", "atol", "abs", "labs", "rand", "srand", "time", "clock", "sqrt",
         "pow", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log", "log10", "floor",
         "ceil", "fabs", "fmod", "round", "strlen", "strcpy", "strncpy", "strcat", "strncat", "strcmp",
         "strncmp", "strchr", "strrchr", "strstr", "strtok", "memset", "memcpy", "memmove", "memcmp",
@@ -390,6 +390,12 @@ static void endAggr() {
 }
 
 static void popSpec() { if (!spec_stack.empty()) spec_stack.pop_back(); }
+// struct S { ... } a, *b;  the variables after the definition have the type S
+static void pushTagSpec(const char* tag) {
+    DeclSpec* s = new DeclSpec();
+    s->type = tag;
+    spec_stack.push_back(s);
+}
 static DeclSpec* currentSpec() { return spec_stack.empty() ? &defaultSpec : spec_stack.back(); }
 
 // Build a Type from the declaration specifier text and declarator shape.
@@ -654,6 +660,18 @@ static std::string convertFp(const Type& dst, const Type& src, const std::string
     if (df && sf && dst.base == src.base) return v;
     std::string t = tacGen.newTemp(dst);
     tacGen.emit("=", v, "", t);
+    return t;
+}
+
+// Implicit conversion to bool (assignment, initialization, argument, return): any non-zero value becomes 1,
+// as in C++. Without it 'bool b = 7;' would store 7.
+static std::string convertBool(const Type& dst, const Type& src, const std::string& v) {
+    if (!known(dst) || dst.base != "bool" || dst.aggr || levels(dst) != 0) return v;
+    if (!known(src) || isAggrVal(src) || (src.base == "bool" && !src.aggr && levels(src) == 0)) return v;
+    long lit;
+    if (parseConstInt(v, lit)) return lit != 0 ? "1" : "0";
+    std::string t = tacGen.newTemp(makeType("int"));
+    tacGen.emit("!=", v, "0", t);
     return t;
 }
 
@@ -1072,7 +1090,7 @@ static void pushArg(Operand* o) {
         return;
     }
     std::string v = rval(o);
-    if (p) v = convertFp(p->ty, o->ty, v);                                   // f(int) given a double and so on
+    if (p) v = convertBool(p->ty, o->ty, convertFp(p->ty, o->ty, v));        // f(int) given a double and so on
     else if (isFloating(o->ty) && o->ty.base == "float") v = convertFp(makeType("double"), o->ty, v);   // varargs promote
     fr.args.push_back(v);
 }
@@ -1155,7 +1173,8 @@ static void checkReturn(Operand* o) {
 // Operand of a return statement: functions returning T& return an address.
 static std::string returnValue(Operand* o) {
     if (cur_returns_ref && !(o->kind == Operand::VALUE && o->place.empty())) return refTarget(o);
-    return rval(o);
+    std::string v = rval(o);
+    return v.empty() ? v : convertBool(cur_ret, o->ty, v);
 }
 
 static void checkIncDec(Operand* o) {
@@ -1192,6 +1211,8 @@ static Operand* postIncDec(Operand* o, const char* op) {
     return typedOp(old, o->ty);
 }
 
+// lhs = rhs, or a compound assignment (lhs += rhs ...): check that lhs is modifiable and the types fit, compute
+// the new value (scaling p += n by the element size), convert it to bool if lhs is a bool, and store it.
 static Operand* assign(Operand* lhs, const std::string& op, Operand* rhs) {
     use(lhs);
     checkModifiable(lhs, "left operand of assignment");
@@ -1219,6 +1240,7 @@ static Operand* assign(Operand* lhs, const std::string& op, Operand* rhs) {
         tacGen.emit(bop, cur, v, t);
         v = t;
     }
+    v = convertBool(lhs->ty, bop.empty() ? rhs->ty : makeType("int"), v);
     store(lhs, v);
     return lhs->kind == Operand::VALUE ? lhs : typedOp(v, lhs->ty);
 }
@@ -1598,7 +1620,7 @@ static void emitInitial(const std::string& target, const Symbol& sym, InitNode* 
             tacGen.emit("addr", target, "", a);
             emitStrcpy(a, init->value);
         } else {
-            tacGen.emit("=", init->value, "", target);
+            tacGen.emit("=", sym.isRef ? init->value : convertBool(sym.ty, init->ty, init->value), "", target);
         }
         return;
     }
@@ -1733,6 +1755,8 @@ static void declareVar(Declarator* d, DeclSpec* sp, InitNode* init) {
 
     if (member) {
         if (isMemberOf(cur_aggr, d->name)) semError("duplicate member '" + d->name + "'");
+        if (ty.aggr && ty.ptr == 0 && !d->isRef && ty.base == cur_aggr)      // struct N { struct N n; }
+            semError("field '" + d->name + "' has incomplete type '" + ty.base + "'");
         aggrMembers[cur_aggr].push_back(d->name);
         aggrMemberTypes[cur_aggr][d->name] = ty;
         memberAccess[cur_aggr][d->name] = cur_access;
@@ -2400,6 +2424,14 @@ static void addBuiltinSigs() {
     af.ret = d;
     af.builtin = true;
     funcSigs["atof"] = af;
+    // double strtod(const char *s, char **end): without this signature the result would be read as an int
+    FuncSig st = af;
+    Param e;
+    e.type = "char";
+    e.ptr = 2;
+    e.ty = makeType("char", 2);
+    st.params.push_back(e);
+    funcSigs["strtod"] = st;
 }
 
 // Forget everything between two compilations (the program and the runtime library are compiled one after the other).
@@ -2566,16 +2598,20 @@ external_declaration
    CLASS / STRUCT DEFINITIONS
    ============================================================ */
 
+/* the definition may be followed by variables of the new type:  struct S { ... } a, *b = 0; */
 class_definition
-    : KW_CLASS tag_name { beginAggr($2, true); } LEFT_BRACE class_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
+    : KW_CLASS tag_name { beginAggr($2, true); } LEFT_BRACE class_member_list_opt RIGHT_BRACE
+      { endAggr(); pushTagSpec($2); } init_declarator_list_opt SEMICOLON { popSpec(); }
     ;
 
 struct_definition
-    : KW_STRUCT tag_name { beginAggr($2, false); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
+    : KW_STRUCT tag_name { beginAggr($2, false); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE
+      { endAggr(); pushTagSpec($2); } init_declarator_list_opt SEMICOLON { popSpec(); }
     ;
 
 union_definition
-    : KW_UNION tag_name { beginAggr($2, false, true); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE SEMICOLON { endAggr(); }
+    : KW_UNION tag_name { beginAggr($2, false, true); } LEFT_BRACE struct_member_list_opt RIGHT_BRACE
+      { endAggr(); pushTagSpec($2); } init_declarator_list_opt SEMICOLON { popSpec(); }
     ;
 
 enum_definition
@@ -3213,6 +3249,8 @@ unary_expression
     | KW_SIZEOF LEFT_PAREN cast_type RIGHT_PAREN {
         Type t = typeFromName($3->type, $3->ptr, 0, false);
         long n = t.ptr > 0 ? 4 : finalLayouts.baseSize(t);
+        if (t.aggr && t.ptr == 0 && n == 0)
+            semError("invalid application of 'sizeof' to incomplete type '" + t.base + "'");
         $$ = typedOp(numstr(n), makeType("int"));
     }
     | KW_NEW type_specifier %prec NEW_TYPE {
