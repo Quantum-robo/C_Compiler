@@ -17,12 +17,14 @@ C++ but are **not supported**; each row shows what to write instead.
 | Unsigned arithmetic                             | `unsigned int u;` is accepted but signed; `unsigned char c = 200;` reads back as -56 | use `int`; `(unsigned char)` / `(unsigned short)` casts do mask |
 | Pointers to arrays                              | `int (*row)[3] = grid;`                     | `int *row = grid[1];` or index the array            |
 | `cond ? a : b` as an lvalue                     | `return c ? x : y;` in a function returning `int &` | use `if` / `else`                            |
-| Enumerator values that are not plain literals   | `enum E { A = 1 << 3 };`                    | `A = 8` (otherwise a warning, names stay in the IR) |
+| Enumerator values that are not integer constants | `enum E { A = 1.5 };`, `A = x`             | an integer constant expression such as `1 << 3`, `~0`, `B | 4` (otherwise a warning, names stay in the IR) |
 | `sscanf`, `fprintf`, `fopen`, `atan` / `asin` / `acos` / `atan2` | `atan(1.0)`                  | not provided by the runtime library                 |
 | `long double`                                   | `long double x;`                            | use `double`                                        |
 
 Also accepted since they are common: `class B;` forward declarations, a definition followed by variables
-(`struct S { int a; } s, *p;`, also for `class` and `union`), anonymous `struct { } name;` / `union { } name;`
+(`struct S { int a; } s, *p;`, also for `class`, `union` and `enum`), types defined inside a struct or class body
+(`struct Outer { struct Inner { int a; } in; };`; as in C, `Inner` is then usable everywhere), `nullptr` (the null
+pointer, like `0`), anonymous `struct { } name;` / `union { } name;`
 members and anonymous `enum { A, B };`, casts `(int*)malloc(n)`, `(char)x`, `(bool)n`, and object-like macros
 (`#define SIZE 10`, expanded wherever the name appears; `#include` and conditional-compilation lines are ignored).
 A struct, class, union or enum name can be used as a type without the keyword (`Counter c;`, `Node *n;`), and a variable
@@ -102,7 +104,10 @@ enum Status { IDLE, RUNNING = 5, STOPPED };   // IDLE = 0, RUNNING = 5, STOPPED 
 The IR uses the numbers, so `s = RUNNING` becomes `s = 5`, `IDLE + 10` becomes `0 + 10`, and `case STOPPED:` becomes `case 6`.
 
 * Decimal, hex (`0x10`), negative (`-3`) and character (`'A'`) initialisers are understood.
-* An initialiser that is not a plain literal (for example `1 << 3`) gives a warning; that enumerator and the ones after it keep their names in the IR.
+* An initialiser may be any integer constant expression of literals and earlier enumerators (`1 << 3`, `~0`, `(1 << 4) - 1`,
+  `A | 2`, `!0`, `010`): the compiler computes it. Anything else (`1.5`, a variable) gives a warning; that enumerator and the
+  ones after it keep their names in the IR.
+* An enum definition may be followed by variables: `enum Mode { OFF, ON } mode = ON;`.
 * Enumerators cannot be assigned to, incremented, or have their address taken (`lvalue required ...`).
 * A local variable, parameter or class member with the same name as an enumerator takes priority inside its scope.
 * An `enum Tag` variable is treated as an `int`; the compiler does not check that only values of that enum are assigned to it.
@@ -124,7 +129,8 @@ The symbol table is built while the parser reads the program (in `src/parser/par
 | `make`                        | Build `./compiler` and `./lexer` (`.exe` on Windows).                                            |
 | `make check`                  | The test suite in `tests/` (`./run.sh ./compiler`).                                              |
 | `make check-archived`         | The archived front-end suite in `archived_tests/25_OCT/` (`./run.sh --archived ./compiler`).     |
-| `make test`                   | Compile `test.c` to `test.s` and run it on SPIM.                                                 |
+| `make test`                   | Compile `test.c` to `test.s` in the root folder (run it with `spim -file test.s`).               |
+| `make test-final`             | Compile every `tests/assembly/<name>.c` to `<name>.s` in the root folder.                         |
 | `make test-lexer`             | Run the standalone lexer over `tests/lexer/*.c` and print the lexical errors.                    |
 | `make test-parser`            | Syntax-check `tests/parser/*.c` (files with `_invalid` in the name must be rejected).            |
 | `make test-semantic`          | Semantic-check `tests/semantic/*.c` and print the errors.                                        |

@@ -30,4 +30,6 @@ tests/parser/*.tac
 *.swp
 *~
 .DS_Store
-/test.s
+
+# Assembly written to the root folder by make test (test.s) and make test-final (tests/assembly/*.c -> <name>.s)
+/*.s

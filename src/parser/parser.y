@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <vector>
 #include <string>
 #include <stack>
@@ -727,6 +728,17 @@ static bool foldConst(const std::string& op, const std::string& l, const std::st
     else if (op == "*") v = a * b;
     else if (op == "/" && b != 0) v = a / b;
     else if (op == "%" && b != 0) v = a % b;
+    else if (op == "<<" && b >= 0 && b < 32) v = (int32_t)((uint32_t)a << b);   // as the 32-bit sllv
+    else if (op == ">>" && b >= 0 && b < 32) v = (int32_t)a >> b;               // arithmetic, as srav
+    else if (op == "&") v = a & b;
+    else if (op == "|") v = a | b;
+    else if (op == "^") v = a ^ b;
+    else if (op == "==") v = a == b;
+    else if (op == "!=") v = a != b;
+    else if (op == "<") v = a < b;
+    else if (op == "<=") v = a <= b;
+    else if (op == ">") v = a > b;
+    else if (op == ">=") v = a >= b;
     else return false;
     if (v > 2147483647LL || v < -2147483648LL) return false;
     out = std::to_string(v);
@@ -780,6 +792,9 @@ static Operand* bitNot(Operand* a) {
     if (known(a->ty) && !isIntegral(a->ty))
         semError("wrong type argument to bit-complement (type '" + typeName(a->ty) + "')");
     std::string v = rval(a);
+    long c;
+    if (a->kind == Operand::VALUE && isIntegral(a->ty) && parseConstInt(v, c))
+        return typedOp(numstr((int32_t)~c), makeType("int"));          // ~0 is -1 at compile time
     std::string t = tacGen.newTemp(makeType("int"));
     tacGen.emit("~", v, "", t);
     return typedOp(t, isIntegral(a->ty) ? makeType("int") : Type());
@@ -789,6 +804,9 @@ static Operand* logNot(Operand* a) {
     if (known(a->ty) && !isScalar(a->ty))
         semError("wrong type argument to '!' (type '" + typeName(a->ty) + "')");
     std::string v = rval(a);
+    long c;
+    if (a->kind == Operand::VALUE && isIntegral(a->ty) && parseConstInt(v, c))
+        return typedOp(c == 0 ? "1" : "0", makeType("int"));           // !0 is 1 at compile time
     std::string t = tacGen.newTemp(makeType("int"));
     tacGen.emit("!", v, "", t);
     return typedOp(t, makeType("int"));
@@ -853,6 +871,7 @@ static std::string dimString(Operand* o) {
 // or const int, folded), a member of the current class (this->name), a function, or an undeclared name (reported
 // when it is actually used, since inside a method it may be a member declared further down the class).
 static Operand* identOp(const std::string& n) {
+    if (n == "nullptr" && !lookupSym(n)) return typedOp("0", makeType("int"));   // the null pointer constant, like 0
     std::string place = resolveName(n);
     Operand* o = valueOp(place);
     o->name = n;
@@ -2616,8 +2635,9 @@ union_definition
 
 enum_definition
     : KW_ENUM tag_name { enumTags.insert($2); typeNames.insert($2); enum_next = 0; enum_next_known = true; }
-      LEFT_BRACE enumerator_list comma_opt RIGHT_BRACE SEMICOLON
-    | KW_ENUM { enum_next = 0; enum_next_known = true; } LEFT_BRACE enumerator_list comma_opt RIGHT_BRACE SEMICOLON
+      LEFT_BRACE enumerator_list comma_opt RIGHT_BRACE { pushTagSpec($2); } init_declarator_list_opt SEMICOLON { popSpec(); }
+    | KW_ENUM { enum_next = 0; enum_next_known = true; } LEFT_BRACE enumerator_list comma_opt RIGHT_BRACE
+      { pushTagSpec("int"); } init_declarator_list_opt SEMICOLON { popSpec(); }
     ;
 
 /* the name after struct / class / union / enum: a new name, or one that is already a type name */
@@ -2652,6 +2672,15 @@ class_member
     | function_definition
     | ctor_definition
     | dtor_definition
+    | nested_definition
+    ;
+
+/* a type defined inside a class / struct body:  struct Outer { struct Inner { int a; } in; }; */
+nested_definition
+    : class_definition
+    | struct_definition
+    | union_definition
+    | enum_definition
     ;
 
 struct_member_list_opt
@@ -2669,6 +2698,7 @@ struct_member
     | function_definition
     | ctor_definition
     | dtor_definition
+    | nested_definition
     ;
 
 /* Counter(int a) : x(a), y(0) { ... }     ~Counter() { ... } */
@@ -3323,7 +3353,12 @@ argument_list
 
 primary_expression
     : IDENTIFIER        { $$ = identOp($1); }
-    | INTEGER_LITERAL   { $$ = typedOp($1, makeType("int")); }
+    | INTEGER_LITERAL   {
+        // an octal literal (010) becomes its decimal value here, so folding and array sizes read it as C does
+        std::string lit = $1;
+        if (lit.size() > 1 && lit[0] == '0') lit = std::to_string(strtol(lit.c_str(), nullptr, 8));
+        $$ = typedOp(lit, makeType("int"));
+    }
     | HEX_LITERAL       { $$ = typedOp($1, makeType("int")); }
     | FLOAT_LITERAL     { $$ = floatLiteral($1); }
     | CHAR_LITERAL      { $$ = typedOp($1, makeType("char")); }

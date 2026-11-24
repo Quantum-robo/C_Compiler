@@ -57,7 +57,8 @@ Options of `./compiler`:
 | `--print-opt-tac` | print the optimised three-address code and what the optimizer did    |
 
 The exit status is 0 on success, 1 for a compile error, 2 for a bad command line. `main`'s return value becomes
-the exit status of the program under SPIM; `main(int argc, char **argv)` receives SPIM's arguments.
+the exit status of the program under SPIM (0 if `main` ends without a `return`, as in C++); `main(int argc, char **argv)`
+receives SPIM's arguments.
 
 The generated `.s` file is self-contained: it holds the program and the part of the runtime library it uses.
 
@@ -73,12 +74,13 @@ make check-archived               # the older front-end suite in archived_tests/
 
 | Folder              | Tests | What is checked                                                                          |
 | ------------------- | ----- | ---------------------------------------------------------------------------------------- |
-| `tests/codegen/`    | 50    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
+| `tests/codegen/`    | 51    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`; exit status from `<name>.status` if present). The expected output was produced by building the same source with g++ |
 | `tests/errors/`     | 25    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
 | `tests/ir/`         | 5     | The three-address code, struct layouts and symbol tables equal `expected/<name>.tac`      |
 | `tests/opt/`        | 5     | The **optimised** three-address code (`--opt-tac`) equals `expected/<name>.tac`: one program per optimization |
 | `tests/parser/`     | 5     | Syntax: files with `_invalid` in the name are rejected, the others accepted               |
 | `tests/semantic/`   | 14    | Feature programs that must compile                                                       |
+| `tests/assembly/`   | -     | Programs compiled by `make test-final` to `<name>.s` in the root folder (not run by `run.sh`) |
 | `tests/lexer/`      | 5     | The standalone lexer: `test5_errors` and `test3_Literals` (first line `// EXPECT:`) must report lexical errors, the others none |
 | `archived_tests/`   | 125   | The earlier front-end suite (golden TAC, semantic error and warning programs)           |
 
@@ -111,6 +113,7 @@ change that was reviewed. `scripts/long_functions.py` lists functions longer tha
 | Strings and the C library                 | `26_strings_ctype`, `27_malloc_free`, `41_macros_casts_names`      |
 | Character and string escapes (octal, hex) | `48_char_escapes`                                                  |
 | `bool` conversions, `struct S { ... } var;`, `strtod` | `50_regressions`                                   |
+| Nested type definitions, enum constant expressions, `nullptr`, octal literals, `main` without `return` | `51_nested_enum_null` |
 | float and double, `%f` in printf / scanf, math functions | `46_float`, `47_float_edge`                  |
 | Optimizer (folding, propagation, CSE, dead code) | `49_optimizer` (and `tests/opt/` for the optimised TAC)     |
 
@@ -137,7 +140,7 @@ C_Compiler/
 │   ├── ir/           TAC.hpp, TAC.cpp                    (three-address code, symbol tables)
 │   ├── optimizer/    Optimizer.*                         (local optimizations on the TAC)
 │   └── codegen/      MipsGen.*, Runtime.cpp              (TAC -> MIPS32; runtime library)
-├── tests/            codegen/ errors/ ir/ opt/ parser/ semantic/ lexer/
+├── tests/            codegen/ errors/ ir/ opt/ parser/ semantic/ lexer/ assembly/
 ├── archived_tests/   25_OCT/                              (earlier front-end suite)
 ├── docs/             LANGUAGE_GUIDE.md  IR.md  MIPS.md
 ├── scripts/          long_functions.py
@@ -159,7 +162,8 @@ compiled with the program).
 | `make`               | Build `./compiler` and `./lexer`.                                                    |
 | `make check`         | Run the test suite (`./run.sh ./compiler`).                                          |
 | `make check-archived`| Run the archived front-end suite.                                                    |
-| `make test`          | Compile `test.c` to `test.s` and run it on SPIM.                                     |
+| `make test`          | Compile `test.c` to `test.s` (in the root folder); run it with `spim -file test.s`. |
+| `make test-final`    | Compile every `tests/assembly/<name>.c` to `<name>.s` in the root folder.            |
 | `make test-lexer`    | Run the standalone lexer over `tests/lexer/*.c`.                                     |
 | `make test-parser`   | Syntax-check `tests/parser/*.c`.                                                     |
 | `make test-semantic` | Check `tests/semantic/*.c`.                                                          |

@@ -36,7 +36,7 @@ COMPILER_SRC = $(PARSER_C) $(LEXER_GEN) $(LEXER_DIR)/Token.cpp $(IR_DIR)/TAC.cpp
 # Headers are prerequisites so that editing one rebuilds the binaries.
 HEADERS = $(wildcard $(LEXER_DIR)/*.hpp $(IR_DIR)/*.hpp $(SEM_DIR)/*.hpp $(GEN_DIR)/*.hpp $(OPT_DIR)/*.hpp)
 
-.PHONY: all test test-lexer test-parser test-semantic ir check check-archived clean
+.PHONY: all test test-final test-lexer test-parser test-semantic ir check check-archived clean
 
 all: lexer compiler
 
@@ -68,13 +68,25 @@ $(PARSER_C) $(PARSER_H): $(PARSER_DIR)/parser.y
 $(LEXER_GEN): $(LEXER_DIR)/Lexer.l $(PARSER_H)
 	$(FLEX) -o $@ $<
 
-# make test: compile test.c to test.s and, if SPIM is installed, run it
+# make test: compile test.c to test.s (MIPS assembly, in the root folder); run it with  spim -file test.s
 test: compiler
-	@$(COMPILER_BIN) test.c -o test.s; s=$$?; \
-	if [ $$s -ne 0 ]; then echo "test.c: FAILED (see the error above)"; exit $$s; fi; \
-	if command -v spim >/dev/null 2>&1; then \
-		spim -quiet -file test.s | sed '/^SPIM Version/d;/^Copyright 1990/d;/^All Rights Reserved/d;/^See the file README/d;/^Loaded:/d'; \
-	else echo "spim is not installed: run  spim -file test.s  on a machine that has it"; fi
+	@$(COMPILER_BIN) test.c -o test.s || { echo "test.c: FAILED (see the error above)"; exit 1; }
+
+# make test-final: compile every tests/assembly/<name>.c to <name>.s in the root folder of the repo
+# (run one with  spim -file <name>.s). Stops with an error status if any file fails to compile.
+ASM_SOURCES = $(wildcard tests/assembly/*.c)
+ASM_OUTPUTS = $(patsubst tests/assembly/%.c,%.s,$(ASM_SOURCES))
+
+test-final: compiler
+	@if [ -z "$(ASM_SOURCES)" ]; then echo "tests/assembly/ has no .c files"; exit 0; fi; \
+	total=0; bad=0; \
+	for f in $(ASM_SOURCES); do \
+		total=$$((total + 1)); \
+		out=$$(basename "$$f" .c).s; \
+		if $(COMPILER_BIN) "$$f" -o "$$out" > /dev/null; then echo "OK      $$f -> $$out"; \
+		else echo "FAILED  $$f (see the error above)"; bad=$$((bad + 1)); fi; \
+	done; \
+	echo ""; echo "Assembly: $$total file(s), $$bad failed"; [ $$bad -eq 0 ]
 
 # make test-lexer: run the standalone lexer over tests/lexer/*.c and show lexical errors
 test-lexer: lexer
@@ -149,6 +161,6 @@ check-archived: compiler
 clean:
 	rm -f $(LEXER_GEN) $(PARSER_C) $(PARSER_H)
 	rm -f lexer lexer.exe compiler compiler.exe
-	rm -f *.TAC .lexer.err .parser.err .sem.err .ir.err test.s
+	rm -f *.TAC .lexer.err .parser.err .sem.err .ir.err test.s $(ASM_OUTPUTS)
 	rm -rf tests/ir_output
 	rm -f tests/parser/*.tac

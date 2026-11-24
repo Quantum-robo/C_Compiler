@@ -19,7 +19,8 @@
 #                                          tests/ir/expected/<name>.tac
 #   tests/opt/*.c                          the optimised IR (--opt-tac) must equal tests/opt/expected/<name>.tac
 #   tests/codegen/*.c                     compiled to MIPS (-o), run on SPIM (stdin from <name>.in if it exists);
-#                                          the output must equal tests/codegen/<name>.expected
+#                                          the output must equal tests/codegen/<name>.expected, and the exit status
+#                                          must equal <name>.status if that file exists
 #
 # Layout of archived_tests/25_OCT (run with --archived):
 #   *.c                                    one program per language feature; the generated IR must
@@ -358,10 +359,16 @@ else
         fi
         if command -v timeout > /dev/null 2>&1; then run_spim="timeout 60 spim"; else run_spim="spim"; fi
         $run_spim -quiet -file "$asm" < "$inp" 2>&1             | sed '/^SPIM Version/d;/^Copyright 1990/d;/^All Rights Reserved/d;/^See the file README/d;/^Loaded:/d' > "$got"
+        status=${PIPESTATUS[0]}
+        # <name>.status, if present, holds the exit status the program must end with (main's return value)
+        want_status=""
+        [ -f "$TESTS/codegen/$name.status" ] && want_status=$(tr -d ' \r\n' < "$TESTS/codegen/$name.status")
         if [ $UPDATE -eq 1 ]; then
             cp "$got" "$exp"; pass "$name (expected output updated)"
         elif [ ! -f "$exp" ]; then
             fail "$name (no $name.expected; review the output, then run with --update)"
+        elif [ -n "$want_status" ] && [ "$status" != "$want_status" ]; then
+            fail "$name (exit status $status, expected $want_status)"
         elif diff --strip-trailing-cr -u "$exp" "$got" > "$TMP.diff"; then
             pass "$name"
         else

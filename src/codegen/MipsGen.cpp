@@ -831,11 +831,15 @@ void Gen::genInstr(const TACInstruction& in) {
 void Gen::genFunction(const FuncInfo& f, const std::vector<TACInstruction>& code, size_t& pos, bool isInit) {
     bool hidden = !isInit && f.ret.aggr && f.ret.ptr == 0 && !f.returnsRef;
     beginFunction(f, hidden);
+    std::string last;                                // the last instruction before func_end
     while (pos < code.size()) {
         const TACInstruction& in = code[pos++];
         if (in.op == "func_end") break;
         genInstr(in);
+        last = in.op;
     }
+    // In C++, reaching the end of main returns 0; without this the exit status would be whatever is in $v0.
+    if (!isInit && isProgram && f.name == "main" && last != "return") ins("li $v0, 0");
     epilogue();
 }
 
