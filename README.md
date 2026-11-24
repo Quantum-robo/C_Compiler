@@ -66,7 +66,7 @@ make check-archived               # the older front-end suite in archived_tests/
 
 | Folder              | Tests | What is checked                                                                          |
 | ------------------- | ----- | ---------------------------------------------------------------------------------------- |
-| `tests/codegen/`    | 47    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
+| `tests/codegen/`    | 48    | **End to end**: compile, run on SPIM, compare the output with `<name>.expected` (stdin from `<name>.in`). The expected output was produced by building the same source with g++ |
 | `tests/errors/`     | 22    | Programs that must be **rejected** (private / protected access, undeclared names, wrong constructor calls, ...) with the expected message |
 | `tests/ir/`         | 5     | The three-address code, struct layouts and symbol tables equal `expected/<name>.tac`      |
 | `tests/parser/`     | 5     | Syntax: files with `_invalid` in the name are rejected, the others accepted               |
@@ -101,6 +101,7 @@ change that was reviewed. `scripts/long_functions.py` lists functions longer tha
 | public / private / protected              | `19_access_modifiers` (legal use), `tests/errors/` (illegal use)   |
 | enum, union                               | `20_enum_union`, `40_enum_union_static`                            |
 | Strings and the C library                 | `26_strings_ctype`, `27_malloc_free`, `41_macros_casts_names`      |
+| Character and string escapes (octal, hex) | `48_char_escapes`                                                  |
 | float and double, `%f` in printf / scanf, math functions | `46_float`, `47_float_edge`                  |
 
 ## The language

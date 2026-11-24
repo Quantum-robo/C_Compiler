@@ -102,16 +102,25 @@ static void directive(const std::string& line)
     macros[name] = trim(text);
 }
 
-// A string literal is invalid if it has a "\x" escape with no hex digit after it (C requires at least one).
-// The lexer rule accepts any "\<char>", so the escapes are checked here, skipping "\\" and "\"" pairs.
+// Is the octal escape starting at 'digits' (just after the backslash; up to 3 digits) above 255? '\777' is.
+static bool octal_out_of_range(const char* digits)
+{
+    int v = 0;
+    for (int k = 0; k < 3 && digits[k] >= '0' && digits[k] <= '7'; ++k) v = v * 8 + (digits[k] - '0');
+    return v > 255;
+}
+
+// A string literal is invalid if it has a "\x" escape with no hex digit after it (C requires at least one), or an
+// octal escape above 255 ("\777"). The lexer rule accepts any "\<char>", so the escapes are checked here.
 static void check_string_escapes(const char* text, int line)
 {
     for (const char* p = text; *p; ++p) {
         if (*p != '\\' || !p[1]) continue;
-        if (p[1] == 'x' && !isxdigit((unsigned char)p[2])) {
-            fprintf(diag_out,
-                "LEXICAL ERROR: invalid escape \\x without hex digits in string literal %s at line %d\n",
-                text, line);
+        const char* why = nullptr;
+        if (p[1] == 'x' && !isxdigit((unsigned char)p[2])) why = "\\x without hex digits";
+        else if (p[1] >= '0' && p[1] <= '7' && octal_out_of_range(p + 1)) why = "octal escape out of range";
+        if (why) {
+            fprintf(diag_out, "LEXICAL ERROR: invalid escape (%s) in string literal %s at line %d\n", why, text, line);
             has_error = 1;
             return;
         }
@@ -183,7 +192,18 @@ static void check_string_escapes(const char* text, int line)
     has_error = 1;
     return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);
 }
-\'([^\'\\\n]|\\.|\\x[0-9a-fA-F]+)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL); }
+    /* one character, one escape, \x with hex digits, or an octal escape of 1 to 3 digits ('\101' is 'A');
+       for an equally long match ('\101' also fits the "two or more characters" rule below) the first rule wins */
+\'([^\'\\\n]|\\.|\\x[0-9a-fA-F]+|\\[0-7]{1,3})\' {
+    if (yytext[1] == '\\' && octal_out_of_range(yytext + 2)) {
+        fprintf(diag_out,
+            "LEXICAL ERROR: invalid character literal %s at line %d (octal escape out of range)\n",
+            yytext,
+            yylineno);
+        has_error = 1;
+    }
+    return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);
+}
     /*\'([^\'\\\n]|\\.)\' { return processToken(TokenType::CharacterLiteral, CHAR_LITERAL);}*/
 \'([^\'\\\n]|\\.){2,}\' {
     fprintf(diag_out,
